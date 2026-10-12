@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 
 public enum DeviceServiceError: LocalizedError {
+    case backendUnavailable
     case deviceMissing
     case inventoryUnavailable
     case invalidSelection
@@ -12,6 +13,7 @@ public enum DeviceServiceError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .backendUnavailable: "This device is connected over USB, but Apple Configurator cannot currently access it. Retry the connection after reopening Configurator."
         case .deviceMissing: "The selected device is no longer connected."
         case .inventoryUnavailable: "The app inventory is unavailable."
         case .invalidSelection: "Select installed, removable apps before deleting."
@@ -24,47 +26,76 @@ public enum DeviceServiceError: LocalizedError {
 }
 
 public actor DeviceService {
-    private let runner: any CfgutilRunning
+    private let runner: (any CfgutilRunning)?
+    private let hardware: any USBDeviceDiscovering
+    private var rememberedNames: [String: String] = [:]
+    public var isBackendConfigured: Bool { runner != nil }
 
     public init(cfgutilPath: String? = nil) throws {
-        runner = try ProcessCfgutilRunner(path: cfgutilPath)
+        runner = try? ProcessCfgutilRunner(path: cfgutilPath)
+        hardware = IOKitUSBDeviceDiscovery()
     }
 
-    public init(runner: any CfgutilRunning) {
+    public init(runner: any CfgutilRunning, hardware: any USBDeviceDiscovering = EmptyUSBDeviceDiscovery()) {
         self.runner = runner
+        self.hardware = hardware
     }
 
     public func discover() throws -> [DeviceInfo] {
-        let result = try runner.run(["--format", "JSON", "list"])
-        guard !result.timedOut,
-              let root = Self.jsonObject(result.stdout) as? [String: Any],
-              let output = root["Output"] as? [String: Any] else {
-            throw ProbeError.malformedDiscovery
+        let usbDevices = (try? hardware.connectedDevices()) ?? []
+        var backendFailure: Error?
+        var ready: [DeviceInfo] = []
+        do {
+            guard let runner else { throw DeviceServiceError.backendUnavailable }
+            let result = try runner.run(["--format", "JSON", "list"])
+            guard !result.timedOut, result.exitCode == 0,
+                  let root = Self.jsonObject(result.stdout) as? [String: Any],
+                  let output = root["Output"] as? [String: Any] else {
+                throw ProbeError.malformedDiscovery
+            }
+            ready = output.compactMap { key, raw -> DeviceInfo? in
+                guard key != "Errors", let info = raw as? [String: Any],
+                      let backendID = info["ECID"] as? String, !backendID.isEmpty else { return nil }
+                let name = (info["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                let model = info["deviceType"] as? String
+                let location = info["locationID"]
+                let isUSB: Bool
+                if let number = location as? NSNumber { isUSB = number.int64Value != 0 }
+                else if let string = location as? String {
+                    isUSB = (UInt64(string) ?? UInt64(string.replacingOccurrences(of: "0x", with: ""), radix: 16) ?? 0) != 0
+                } else { isUSB = false }
+                return DeviceInfo(id: DeviceIdentity.canonicalECID(backendID) ?? backendID,
+                                  displayName: name ?? model ?? "Apple device", model: model,
+                                  transport: isUSB ? "USB" : "Unknown", backendIdentifier: backendID)
+            }
+        } catch { backendFailure = error }
+        for device in ready { rememberedNames[device.id] = device.displayName }
+        var merged = Dictionary(ready.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for device in usbDevices where device.isSupportedMobileDevice {
+            let identity = device.ecid.flatMap(DeviceIdentity.canonicalECID) ?? "usb-registry:\(device.registryID)"
+            if let existing = merged[identity] {
+                merged[identity] = DeviceInfo(id: existing.id, displayName: existing.displayName,
+                                             model: existing.model, transport: "USB",
+                                             backendIdentifier: existing.backendIdentifier)
+            } else {
+                merged[identity] = DeviceInfo(id: identity, displayName: rememberedNames[identity] ?? "\(device.productName) (USB)",
+                                             model: device.productName, transport: "USB",
+                                             availability: .usbDetectedBackendUnavailable,
+                                             diagnostic: "Your \(device.productName) is connected to this Mac, but Apple Configurator cannot currently access it.")
+            }
         }
-        return output.compactMap { key, raw -> DeviceInfo? in
-            guard key != "Errors", let info = raw as? [String: Any],
-                  let id = info["ECID"] as? String, !id.isEmpty else { return nil }
-            let name = (info["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            let model = info["deviceType"] as? String
-            let location = info["locationID"]
-            let isUSB: Bool
-            if let number = location as? NSNumber { isUSB = number.int64Value != 0 }
-            else if let string = location as? String {
-                isUSB = (UInt64(string) ?? UInt64(string.replacingOccurrences(of: "0x", with: ""), radix: 16) ?? 0) != 0
-            } else { isUSB = false }
-            return DeviceInfo(id: id, displayName: name ?? model ?? "Apple device",
-                              model: model, transport: isUSB ? "USB" : "Unknown")
-        }.sorted { $0.id < $1.id }
+        if merged.isEmpty, let backendFailure { throw backendFailure }
+        return merged.values.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     public func loadInventory(deviceID: String) throws -> InventorySnapshot {
-        try requireDevice(deviceID)
-        let result = try runner.run(["--format", "JSON", "--ecid", deviceID, "get", "installedApps"])
+        let target = try requireDevice(deviceID).backendIdentifier
+        let result = try run(["--format", "JSON", "--ecid", target, "get", "installedApps"])
         guard !result.timedOut,
               let root = Self.jsonObject(result.stdout) as? [String: Any],
               let output = root["Output"] as? [String: Any],
-              let device = output[deviceID] as? [String: Any],
-              !Self.selectedError(root: root, output: output, device: device, id: deviceID),
+              let device = output[target] as? [String: Any],
+              !Self.selectedError(root: root, output: output, device: device, id: target),
               let rawApps = device["installedApps"] as? [[String: Any]] else {
             return InventorySnapshot(deviceID: deviceID, apps: [],
                                      warning: "App inventory could not be decoded.", isPartial: true, isDecoded: false)
@@ -87,8 +118,8 @@ public actor DeviceService {
     }
 
     public func loadLayout(deviceID: String) throws -> LayoutSnapshot {
-        try requireDevice(deviceID)
-        let result = try runner.run(["--format", "JSON", "--ecid", deviceID, "get-icon-layout"])
+        let target = try requireDevice(deviceID).backendIdentifier
+        let result = try run(["--format", "JSON", "--ecid", target, "get-icon-layout"])
         let decoded = result.timedOut ? nil : try? LayoutCodec.decode(result.stdout)
         let warning: String? = decoded == nil ? "Home Screen layout could not be decoded."
             : (result.exitCode == 0 ? nil : "cfgutil returned a nonzero status; layout may be partial.")
@@ -122,13 +153,13 @@ public actor DeviceService {
 
     public func loadIcon(deviceID: String, appID: String) throws -> Data? {
         try Task.checkCancellation()
-        try requireDevice(deviceID)
+        let target = try requireDevice(deviceID).backendIdentifier
         try Task.checkCancellation()
         guard Self.validBundleID(appID) else { throw DeviceServiceError.invalidSelection }
         let temp = try Self.privateTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
-        let result = try runner.run(["--format", "JSON", "--ecid", deviceID,
-                                     "get-app-icon", "--raw", appID], in: temp)
+        let result = try run(["--format", "JSON", "--ecid", target,
+                             "get-app-icon", "--raw", appID], in: temp)
         try Task.checkCancellation()
         guard !result.timedOut, result.exitCode == 0 else { return nil }
         let files = try FileManager.default.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil)
@@ -140,7 +171,7 @@ public actor DeviceService {
     }
 
     public func removeApps(deviceID: String, ids: [String]) throws -> [RemovalResult] {
-        try requireDevice(deviceID)
+        let target = try requireDevice(deviceID).backendIdentifier
         let unique = Array(Set(ids)).sorted()
         guard !unique.isEmpty, unique.allSatisfy(Self.validBundleID) else {
             throw DeviceServiceError.invalidSelection
@@ -154,8 +185,8 @@ public actor DeviceService {
                 outcomes.append(RemovalResult(id: id, success: false, message: "App is not present in the fresh installed-app inventory."))
                 continue
             }
-            let result = try runner.run(["--format", "JSON", "--ecid", deviceID, "remove-app", id])
-            let commandSucceeded = !result.timedOut && result.exitCode == 0 && !Self.responseHasSelectedError(result.stdout, id: deviceID)
+            let result = try run(["--format", "JSON", "--ecid", target, "remove-app", id])
+            let commandSucceeded = !result.timedOut && result.exitCode == 0 && !Self.responseHasSelectedError(result.stdout, id: target)
             outcomes.append(RemovalResult(id: id, success: commandSucceeded,
                                           message: commandSucceeded ? "Removal command completed; verifying." : "Removal failed or its result is uncertain."))
         }
@@ -170,9 +201,8 @@ public actor DeviceService {
     }
 
     public func applyLayout(deviceID: String, baseline: LayoutSnapshot, draft: HomeLayout) throws -> ApplyResult {
-        guard let selectedDevice = try discover().first(where: { $0.id == deviceID }) else {
-            throw DeviceServiceError.deviceMissing
-        }
+        let selectedDevice = try requireDevice(deviceID)
+        let target = selectedDevice.backendIdentifier
         guard baseline.deviceID == deviceID, baseline.layout != nil,
               !baseline.isPartial, !LayoutCodec.containsUnknown(draft) else { throw DeviceServiceError.unsafeLayout }
         guard let original = baseline.layout,
@@ -198,10 +228,10 @@ public actor DeviceService {
         defer { try? FileManager.default.removeItem(at: temp) }
         let input = temp.appendingPathComponent("layout.json")
         try Self.writePrivate(proposed, to: input)
-        let result = try runner.run(["--format", "JSON", "--ecid", deviceID,
-                                     "set-icon-layout", input.path])
+        let result = try run(["--format", "JSON", "--ecid", target,
+                             "set-icon-layout", input.path])
         guard !result.timedOut, result.exitCode == 0,
-              !Self.responseHasSelectedError(result.stdout, id: deviceID) else {
+              !Self.responseHasSelectedError(result.stdout, id: target) else {
             return ApplyResult(success: false, message: "Layout update failed or its result is uncertain. Reload the device before retrying.", backupURL: backup)
         }
         let verified = try loadLayout(deviceID: deviceID)
@@ -212,10 +242,18 @@ public actor DeviceService {
                            backupURL: backup)
     }
 
-    private func requireDevice(_ id: String) throws {
-        guard !id.isEmpty, try discover().contains(where: { $0.id == id }) else {
+    private func requireDevice(_ id: String) throws -> DeviceInfo {
+        guard !id.isEmpty, let device = try discover().first(where: { $0.id == id }) else {
             throw DeviceServiceError.deviceMissing
         }
+        guard device.availability == .ready else { throw DeviceServiceError.backendUnavailable }
+        return device
+    }
+
+    private func run(_ arguments: [String], in directory: URL? = nil) throws -> CommandResult {
+        guard let runner else { throw DeviceServiceError.backendUnavailable }
+        if let directory { return try runner.run(arguments, in: directory) }
+        return try runner.run(arguments)
     }
 
     private static func validBundleID(_ id: String) -> Bool {

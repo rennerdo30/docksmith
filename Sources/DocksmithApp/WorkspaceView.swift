@@ -17,14 +17,14 @@ struct WorkspaceView: View {
                 )) {
                     Text("Choose a device").tag(String?.none)
                     ForEach(model.devices) { device in
-                        Text(device.displayName).tag(Optional(device.id))
+                        Text(device.displayName + (device.availability == .ready ? "" : " · Configurator unavailable")).tag(Optional(device.id))
                     }
                 }
                 .labelsHidden()
                 .disabled(model.selectionLocked || model.devices.isEmpty)
 
                 if let device = model.selectedDevice {
-                    Label(device.transport, systemImage: device.transport == "USB" ? "cable.connector" : "questionmark.circle")
+                    Label(device.availability == .ready ? device.transport : "USB detected · Configurator unavailable", systemImage: device.transport == "USB" ? "cable.connector" : "questionmark.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -103,7 +103,21 @@ struct WorkspaceView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if model.setupRequired {
+        if let device = model.selectedDevice, device.availability != .ready {
+            ContentUnavailableView {
+                Label("USB detected", systemImage: "iphone.and.arrow.forward")
+            } description: {
+                VStack(spacing: 12) {
+                    Text(device.diagnostic ?? "Your device is connected to this Mac, but Apple Configurator cannot currently access it.")
+                    Text("Close and reopen Apple Configurator and check that your device appears there. If needed, reconnect the cable, unlock your device and accept Trust, then retry.")
+                    Text("Apps and Home Screen changes become available when Configurator can access the device.")
+                }
+            } actions: {
+                Button("Retry Connection") { model.requestRefresh() }.disabled(model.selectionLocked)
+                Button("Open Apple Configurator") { model.openConfigurator() }
+                Button("Choose cfgutil…") { model.chooseCfgutil() }.disabled(model.selectionLocked)
+            }
+        } else if model.setupRequired {
             ContentUnavailableView {
                 Label("Apple Configurator Required", systemImage: "shippingbox")
             } description: {

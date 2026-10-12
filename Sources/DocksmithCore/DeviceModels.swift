@@ -1,16 +1,29 @@
 import Foundation
 
+public enum DeviceAvailability: Sendable {
+    case ready
+    case usbDetectedBackendUnavailable
+}
+
 public struct DeviceInfo: Identifiable, Sendable {
     public let id: String
     public let displayName: String
     public let model: String?
     public let transport: String
+    public let availability: DeviceAvailability
+    public let diagnostic: String?
+    let backendIdentifier: String
 
-    public init(id: String, displayName: String, model: String?, transport: String) {
+    public init(id: String, displayName: String, model: String?, transport: String,
+                availability: DeviceAvailability = .ready, diagnostic: String? = nil,
+                backendIdentifier: String? = nil) {
         self.id = id
         self.displayName = displayName
         self.model = model
         self.transport = transport
+        self.availability = availability
+        self.diagnostic = diagnostic
+        self.backendIdentifier = backendIdentifier ?? id
     }
 }
 

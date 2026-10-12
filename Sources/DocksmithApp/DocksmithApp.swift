@@ -60,9 +60,10 @@ final class WorkspaceModel: ObservableObject {
 
     var selectedDevice: DeviceInfo? { devices.first { $0.id == selectedDeviceID } }
     var isBusy: Bool { busyMessage != nil }
+    var selectedDeviceReady: Bool { selectedDevice?.availability == .ready }
     var selectionLocked: Bool { isBusy || showRemoveConfirmation || showApplyConfirmation }
     var hasDraftChanges: Bool { baseline?.layout != nil && draft != baseline?.layout }
-    var canEditLayout: Bool { !isBusy && baseline?.isPartial == false && !hasUnknownLayoutEntries }
+    var canEditLayout: Bool { selectedDeviceReady && !isBusy && baseline?.isPartial == false && !hasUnknownLayoutEntries }
     var hasUnknownLayoutEntries: Bool {
         guard let draft else { return false }
         func containsUnknown(_ nodes: [LayoutNode]) -> Bool {
@@ -159,9 +160,10 @@ final class WorkspaceModel: ObservableObject {
         busyMessage = "Finding devices…"
         errorMessage = nil
         do {
-            let found = try await configuredService().discover()
+            let backend = try configuredService()
+            let found = try await backend.discover()
             devices = found
-            setupRequired = false
+            setupRequired = !(await backend.isBackendConfigured)
             if let selectedDeviceID, !found.contains(where: { $0.id == selectedDeviceID }) {
                 self.selectedDeviceID = nil
                 generation += 1
@@ -177,7 +179,8 @@ final class WorkspaceModel: ObservableObject {
             busyMessage = nil
             if selectedDeviceID != nil { await loadSelectedDevice() }
         } catch {
-            setupRequired = service == nil
+            if let service { setupRequired = !(await service.isBackendConfigured) }
+            else { setupRequired = true }
             errorMessage = error.localizedDescription
             devices = []
             selectedDeviceID = nil
@@ -202,6 +205,7 @@ final class WorkspaceModel: ObservableObject {
         draft = nil
         selectedApps = []
         iconCache = [:]
+        guard selectedDeviceReady else { return }
         busyMessage = "Reading device…"
         errorMessage = nil
         defer { if token == generation { busyMessage = nil } }
@@ -225,7 +229,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func loadIconIfNeeded(for appID: String) async {
-        guard !isBusy, let selectedDeviceID, iconCache[appID] == nil,
+        guard selectedDeviceReady, !isBusy, let selectedDeviceID, iconCache[appID] == nil,
               let service else { return }
         let token = generation
         if let data = try? await service.loadIcon(deviceID: selectedDeviceID, appID: appID),
@@ -235,7 +239,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func removeSelectedApps() async {
-        guard let selectedDeviceID, !selectedApps.isEmpty, !hasDraftChanges, !isBusy else { return }
+        guard selectedDeviceReady, let selectedDeviceID, !selectedApps.isEmpty, !hasDraftChanges, !isBusy else { return }
         let ids = Array(selectedApps)
         resultNames = Dictionary(uniqueKeysWithValues: ids.map { ($0, displayName(for: $0)) })
         busyMessage = "Removing selected apps…"
@@ -257,7 +261,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func applyDraft() async {
-        guard let selectedDeviceID, let baseline, let draft, hasDraftChanges,
+        guard selectedDeviceReady, let selectedDeviceID, let baseline, let draft, hasDraftChanges,
               !baseline.isPartial,
               !hasUnknownLayoutEntries, !isBusy else { return }
         busyMessage = "Applying Home Screen layout…"
@@ -276,4 +280,12 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func revertDraft() { draft = baseline?.layout }
+
+    func openConfigurator() {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.configurator.ui") else {
+            errorMessage = "Install Apple Configurator, then choose its cfgutil executable from Connection."
+            return
+        }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+    }
 }
