@@ -82,7 +82,7 @@ final class ProbeTests: XCTestCase {
     }
 }
 
-private final class FixtureRunner: CfgutilRunning {
+private final class FixtureRunner: CfgutilRunning, @unchecked Sendable {
     var results: [CommandResult]
     var calls: [[String]] = []
     init(results: [CommandResult]) { self.results = results }

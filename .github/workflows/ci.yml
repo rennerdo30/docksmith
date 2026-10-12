@@ -43,3 +43,22 @@ jobs:
           file .build/release/docksmith
           test "$(lipo -archs .build/release/docksmith)" = "$EXPECTED_ARCH"
           .build/release/docksmith --help
+      - name: Bundle and inspect native app
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          scripts/bundle-app.sh release 0.1.0 "$GITHUB_RUN_NUMBER" dist
+          test "$(lipo -archs dist/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/Docksmith.app/Contents/Info.plist)" = "Docksmith.icns"
+          test -s dist/Docksmith.app/Contents/Resources/Docksmith.icns
+          archive="dist/docksmith-ci-macos-${EXPECTED_ARCH}.app.zip"
+          ditto -c -k --keepParent dist/Docksmith.app "$archive"
+          mkdir -p dist/verify
+          ditto -x -k "$archive" dist/verify
+          test "$(lipo -archs dist/verify/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: docksmith-app-${{ matrix.arch }}
+          path: dist/docksmith-ci-macos-${{ matrix.arch }}.app.zip
+          if-no-files-found: error
+          retention-days: 7

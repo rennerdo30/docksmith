@@ -15,20 +15,29 @@ public struct CommandResult {
     }
 }
 
-public protocol CfgutilRunning {
+public protocol CfgutilRunning: Sendable {
     func run(_ arguments: [String]) throws -> CommandResult
+    func run(_ arguments: [String], in directory: URL?) throws -> CommandResult
+}
+
+public extension CfgutilRunning {
+    func run(_ arguments: [String], in directory: URL?) throws -> CommandResult {
+        try run(arguments)
+    }
 }
 
 public enum RunnerError: LocalizedError {
     case executableMissing
     case launchFailed
     case unsupportedInvocation
+    case invalidWorkingDirectory
 
     public var errorDescription: String? {
         switch self {
         case .executableMissing: "cfgutil was not found. Install Apple Configurator or pass --cfgutil PATH."
         case .launchFailed: "Could not launch cfgutil."
-        case .unsupportedInvocation: "Only device listing, installed-app inventory, and layout reads are supported."
+        case .unsupportedInvocation: "Unsupported cfgutil command."
+        case .invalidWorkingDirectory: "This cfgutil command requires a private temporary directory."
         }
     }
 }
@@ -50,7 +59,7 @@ private final class CapturedData: @unchecked Sendable {
     }
 }
 
-public final class ProcessCfgutilRunner: CfgutilRunning {
+public final class ProcessCfgutilRunner: CfgutilRunning, @unchecked Sendable {
     public let executableURL: URL
     public let timeout: TimeInterval
 
@@ -72,18 +81,30 @@ public final class ProcessCfgutilRunner: CfgutilRunning {
     }
 
     public func run(_ arguments: [String]) throws -> CommandResult {
+        try run(arguments, in: nil)
+    }
+
+    public func run(_ arguments: [String], in directory: URL?) throws -> CommandResult {
         let isList = arguments == ["--format", "JSON", "list"]
-        let isDeviceRead = (arguments.count == 5 || arguments.count == 6)
+        let isSelected = arguments.count >= 5
             && Array(arguments.prefix(3)) == ["--format", "JSON", "--ecid"]
             && !arguments[3].isEmpty
-            && ((arguments.count == 6 && Array(arguments.suffix(2)) == ["get", "installedApps"])
-                || (arguments.count == 5 && arguments[4] == "get-icon-layout"))
-        guard isList || isDeviceRead else { throw RunnerError.unsupportedInvocation }
+        let isInventory = isSelected && arguments.count == 6 && arguments[4...5] == ["get", "installedApps"]
+        let isLayout = isSelected && arguments.count == 5 && arguments[4] == "get-icon-layout"
+        let isIcon = isSelected && arguments.count == 7 && arguments[4...5] == ["get-app-icon", "--raw"] && !arguments[6].isEmpty
+        let isRemove = isSelected && arguments.count == 6 && arguments[4] == "remove-app" && !arguments[5].isEmpty
+        let isApply = isSelected && arguments.count == 6 && arguments[4] == "set-icon-layout"
+            && FileManager.default.fileExists(atPath: arguments[5])
+        guard isList || isInventory || isLayout || isIcon || isRemove || isApply else {
+            throw RunnerError.unsupportedInvocation
+        }
+        if isIcon && directory == nil { throw RunnerError.invalidWorkingDirectory }
         let process = Process()
         let out = Pipe()
         let err = Pipe()
         process.executableURL = executableURL
         process.arguments = arguments
+        process.currentDirectoryURL = directory
         process.standardOutput = out
         process.standardError = err
         let completed = DispatchSemaphore(value: 0)
@@ -113,8 +134,9 @@ public final class ProcessCfgutilRunner: CfgutilRunning {
                 _ = completed.wait(timeout: .now() + 2)
             }
         }
-        group.wait()
+        let drainTimedOut = group.wait(timeout: .now() + 2) == .timedOut
         return CommandResult(stdout: stdout.load(), stderr: stderr.load(),
-                             exitCode: process.terminationStatus, timedOut: timedOut)
+                             exitCode: process.isRunning ? -1 : process.terminationStatus,
+                             timedOut: timedOut || drainTimedOut)
     }
 }

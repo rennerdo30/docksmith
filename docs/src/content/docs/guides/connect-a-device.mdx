@@ -1,14 +1,14 @@
 ---
 title: Connect a device
-description: Establish device trust before using the read-only probe.
+description: Establish device trust before using Docksmith.
 ---
 
 1. Connect the device to your Mac with a cable.
 2. Unlock the device and accept its trust prompt if one appears.
-3. Run `swift run docksmith devices` and choose the temporary number shown for the device.
-4. Run `swift run docksmith probe --device NUMBER`, replacing `NUMBER` with that number.
+3. Open Docksmith, click **Refresh Devices**, and select the intended device in the sidebar.
+4. Use **Apps** or **Home Screen**. Review the selected apps or layout changes in Docksmith before confirming a device change.
 
-The CLI discovers devices again before probing. A number may refer to a different device after a reconnect, so list devices again whenever the connection changes.
+The app keeps the selected device explicit. If it disconnects, refresh and choose again. The separate CLI uses transient numbers; run `devices` again after reconnecting before probing.
 
 ## About Wi-Fi
 

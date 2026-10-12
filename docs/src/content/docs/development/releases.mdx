@@ -3,9 +3,9 @@ title: Releases
 description: How Docksmith builds and publishes its CLI and documentation.
 ---
 
-Continuous integration builds and tests the Swift package. A tag in `vMAJOR.MINOR.PATCH` form triggers release automation. It tests and builds on both Apple Silicon and Intel macOS runners, then packages two architecture-specific archives containing the CLI, README, and MIT license. Both builds must pass before publication. The release includes `SHA256SUMS` for the archives.
+Continuous integration builds and tests the Swift package. A tag in `vMAJOR.MINOR.PATCH` form, optionally with a prerelease suffix, triggers release automation. It tests and builds on both Apple Silicon and Intel macOS runners, then packages architecture-specific `Docksmith.app` ZIP archives and companion CLI archives. Both builds must pass before publication. The release includes `SHA256SUMS` for its archives.
 
-The current release workflow does not sign or notarize the CLI. No version-tag release has been issued yet; consult the release page when one is available. The CLI is an early read-only foundation.
+The current release workflow does not sign or notarize the app or CLI. No version-tag release has been issued yet; consult the release page when one is available.
 
 The documentation site is built from this repository's `docs/` directory with Astro Starlight. A pull request builds the docs for validation. Changes on `main` deploy the built `docs/dist` artifact through GitHub Pages after Pages is configured to use GitHub Actions.
 

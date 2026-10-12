@@ -1,4 +1,4 @@
-name: Release CLI
+name: Release Docksmith
 
 on:
   push:
@@ -48,16 +48,28 @@ jobs:
           test "$(lipo -archs .build/release/docksmith)" = "$EXPECTED_ARCH"
           .build/release/docksmith --help
           mkdir -p stage dist verify
+          version="${RELEASE_TAG#v}"
+          version="${version%%-*}"
+          scripts/bundle-app.sh release "$version" "$GITHUB_RUN_NUMBER" dist
+          test "$(lipo -archs dist/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
+          app_archive="docksmith-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.app.zip"
+          ditto -c -k --keepParent dist/Docksmith.app "dist/$app_archive"
+          ditto -x -k "dist/$app_archive" verify
+          test "$(lipo -archs verify/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
+          plutil -lint verify/Docksmith.app/Contents/Info.plist
+          test -s verify/Docksmith.app/Contents/Resources/Docksmith.icns
           cp .build/release/docksmith LICENSE README.md stage/
-          archive="docksmith-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.tar.gz"
-          tar -czf "dist/$archive" -C stage docksmith LICENSE README.md
-          tar -xzf "dist/$archive" -C verify
+          cli_archive="docksmith-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.tar.gz"
+          tar -czf "dist/$cli_archive" -C stage docksmith LICENSE README.md
+          tar -xzf "dist/$cli_archive" -C verify
           test "$(lipo -archs verify/docksmith)" = "$EXPECTED_ARCH"
           verify/docksmith --help
       - uses: actions/upload-artifact@v7
         with:
           name: docksmith-${{ matrix.arch }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.app.zip
+            dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -81,8 +93,14 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
           test -f "dist/docksmith-${RELEASE_TAG}-macos-arm64.tar.gz"
           test -f "dist/docksmith-${RELEASE_TAG}-macos-x86_64.tar.gz"
+          test -f "dist/docksmith-${RELEASE_TAG}-macos-arm64.app.zip"
+          test -f "dist/docksmith-${RELEASE_TAG}-macos-x86_64.app.zip"
           cd dist
-          sha256sum "docksmith-${RELEASE_TAG}-macos-arm64.tar.gz" "docksmith-${RELEASE_TAG}-macos-x86_64.tar.gz" > SHA256SUMS
+          sha256sum \
+            "docksmith-${RELEASE_TAG}-macos-arm64.app.zip" \
+            "docksmith-${RELEASE_TAG}-macos-x86_64.app.zip" \
+            "docksmith-${RELEASE_TAG}-macos-arm64.tar.gz" \
+            "docksmith-${RELEASE_TAG}-macos-x86_64.tar.gz" > SHA256SUMS
           sha256sum -c SHA256SUMS
       - name: Create and publish release
         env:
@@ -97,10 +115,12 @@ jobs:
           options=()
           if [[ "$RELEASE_TAG" == *-* ]]; then options+=(--prerelease); fi
           gh release create "$RELEASE_TAG" \
+            dist/docksmith-"$RELEASE_TAG"-macos-arm64.app.zip \
+            dist/docksmith-"$RELEASE_TAG"-macos-x86_64.app.zip \
             dist/docksmith-"$RELEASE_TAG"-macos-arm64.tar.gz \
             dist/docksmith-"$RELEASE_TAG"-macos-x86_64.tar.gz \
             dist/SHA256SUMS \
             --verify-tag --draft "${options[@]}" \
             --title "Docksmith $RELEASE_TAG" \
-            --notes "Read-only Docksmith CLI for macOS arm64 and x86_64. Requires a separately installed Apple Configurator for cfgutil. These binaries are unsigned and not notarized."
+            --notes "Docksmith native macOS app and companion CLI for arm64 and x86_64. Apple Configurator is required separately for cfgutil. These binaries are unsigned and not notarized."
           gh release edit "$RELEASE_TAG" --draft=false

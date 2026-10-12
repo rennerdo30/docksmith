@@ -7,10 +7,12 @@ let package = Package(
     products: [
         .library(name: "DocksmithCore", targets: ["DocksmithCore"]),
         .executable(name: "docksmith", targets: ["docksmith"]),
+        .executable(name: "DocksmithApp", targets: ["DocksmithApp"]),
     ],
     targets: [
         .target(name: "DocksmithCore"),
         .executableTarget(name: "docksmith", dependencies: ["DocksmithCore"]),
+        .executableTarget(name: "DocksmithApp", dependencies: ["DocksmithCore"]),
         .testTarget(name: "DocksmithCoreTests", dependencies: ["DocksmithCore"]),
     ],
     swiftLanguageModes: [.v6]

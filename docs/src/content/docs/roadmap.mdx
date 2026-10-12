@@ -1,12 +1,13 @@
 ---
 title: Roadmap
-description: Planned capabilities beyond the read-only CLI.
+description: Current limitations and planned improvements.
 ---
 
-Docksmith's current milestone is a read-only, explicitly selected CLI probe. These ideas are planned and **not implemented**:
+Docksmith now has a native macOS interface for app inventory, confirmed batch removal, and icon and folder layout editing. The read-only CLI remains available for inspection.
 
-- A native macOS interface for exploring supported device capabilities.
-- Batch app deletion with a preview and explicit confirmation.
-- Home Screen layout editing gated by verified device capabilities.
+Current limits and future work include:
 
-Those features would change device state and require their own design and validation. The present CLI cannot delete apps or write layouts. Wireless `cfgutil` probing is also unverified.
+- Widgets and widget positions are outside the Home Screen editor.
+- Unsupported layout entries and partial layout reads block Apply until the format is understood.
+- Wireless `cfgutil` reads and changes have not been verified. Finder's Wi-Fi setup instructions do not establish Docksmith support.
+- Broader device and OS compatibility needs validation. A connected device can report unavailable data or reject a change.

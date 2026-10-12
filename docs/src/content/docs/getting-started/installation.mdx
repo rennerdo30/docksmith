@@ -1,23 +1,23 @@
 ---
 title: Install
-description: Build Docksmith's current macOS command-line probe.
+description: Build or install Docksmith for macOS.
 ---
 
-Docksmith currently ships as a Swift package. Building from source requires macOS 14 or later and a Swift 6 toolchain. The probe also requires Apple's `cfgutil`, installed separately with Apple Configurator. Docksmith does not include or redistribute Apple software.
+Docksmith requires macOS 14 or later. Building from source requires a Swift 6 toolchain. Device features use Apple's `cfgutil`, installed separately with Apple Configurator. Docksmith does not include or redistribute Apple software.
 
 From the repository root:
 
 ```sh
 swift build
-swift run docksmith help
+swift run DocksmithApp
 ```
 
-If a release provides a CLI archive, use its accompanying release notes for installation and verification. Release assets may be unsigned or unnotarized; check the release description before opening a downloaded executable.
+The Swift package also provides the `docksmith` read-only CLI. Run `swift run docksmith help` to see its commands. To build a local app bundle, run `swift build -c release && scripts/bundle-app.sh release 0.1.0 1 dist`; the bundle is written to `dist/Docksmith.app`. For a packaged release, use the release notes to verify the ZIP archive and install the app in Applications. Current release artifacts are unsigned and unnotarized.
 
-If `cfgutil` cannot be found, supply the path to your installation:
+If the app cannot find `cfgutil`, choose its executable in the setup screen or Connection view. The CLI accepts a path argument:
 
 ```sh
 swift run docksmith devices --cfgutil "/path/to/cfgutil"
 ```
 
-The path must point to an executable `cfgutil` binary. Run [`devices` and `probe`](../../reference/cli/) after connecting and trusting a device.
+The path must point to an executable `cfgutil` binary. See [device connection](../../guides/connect-a-device/) before managing a device, or [`devices` and `probe`](../../reference/cli/) for read-only inspection.

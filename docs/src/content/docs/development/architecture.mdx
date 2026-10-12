@@ -1,11 +1,13 @@
 ---
 title: Architecture
-description: How the Swift CLI performs a selected, read-only probe.
+description: How the macOS app and read-only CLI use DocksmithCore.
 ---
 
-The Swift package has two products: the `DocksmithCore` library and the `docksmith` executable. The CLI handles arguments and presents a compact report; the core resolves and runs Apple's separately installed `cfgutil`, parses its responses, and models check states.
+The Swift package has three products: the `DocksmithCore` library, the `Docksmith` macOS GUI executable, and the read-only `docksmith` CLI. The core resolves and runs Apple's separately installed `cfgutil` and decodes selected-device responses.
 
-The flow is deliberate: `devices` discovers connected devices, and `probe` requires a selected device. A probe discovers again, checks the selection, requests `installedApps`, then requests the icon layout. It derives counts and warnings without returning raw inventory or layout contents in the public report.
+The app keeps device selection, app inventory, and a Home Screen draft in its workspace. It reads in the background and ignores stale results after selection changes. App removal requires an exact in-app preview and confirmation, then shows per-app outcomes. Layout editing works with a draft; Apply checks the current device layout against the baseline and saves a private local backup before writing. Unknown layout entries and partial reads prevent Apply.
+
+The CLI remains read-only: `devices` discovers connected devices, and `probe` requires a selected device. A probe discovers again, checks the selection, requests `installedApps`, then requests the icon layout. It derives counts and warnings without returning raw inventory or layout contents in its public report.
 
 Responses can be incomplete. A decodable response accompanied by a nonzero `cfgutil` status retains its decoded count and adds a partial-result warning. Malformed or missing data is reported as indeterminate. The current code does not issue device-changing commands.
 

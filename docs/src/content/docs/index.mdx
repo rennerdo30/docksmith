@@ -1,24 +1,25 @@
 ---
 title: Docksmith
-description: Inspect connected Apple devices from macOS without changing them.
+description: Manage apps and Home Screen icons on a connected Apple device from your Mac.
 ---
 
-Docksmith is an early, open-source macOS tool for **read-only** inspection of connected Apple devices. Today it provides a Swift command-line probe. A native macOS app is planned, but is not part of this release.
+Docksmith is an open-source macOS app for inspecting installed apps and organizing Home Screen icons on a connected Apple device. It also includes a read-only command-line probe.
 
-The CLI can list connected devices and check whether installed-app inventory and Home Screen layout can be decoded for a device you select. Its report contains status, counts, and warnings. It does not print app records, device identifiers, or layout contents, and it does not save a local report.
+This is an early preview. The app and its confirmation flows have been built and tested without performing live device changes; app removal and layout writes have not yet been verified on a phone.
 
-## Try the current CLI
+Choose a device in the sidebar to see its apps and Home Screen. Search and select apps for removal, then review the exact selection and confirm. Move icons between the Dock, pages, and folders; review the draft before applying it. These actions change the selected device only after the in-app confirmation.
 
-You need macOS 14 or later, Swift 6, and Apple's separately installed Apple Configurator command-line tool, `cfgutil`. Docksmith does not bundle or redistribute Apple Configurator or `cfgutil`.
+## Get started
+
+You need macOS 14 or later and Apple's separately installed Apple Configurator command-line tool, `cfgutil`. Docksmith does not bundle or redistribute Apple Configurator or `cfgutil`. See [installation](./getting-started/installation/) and [device connection](./guides/connect-a-device/).
 
 ```sh
 swift build
-swift run docksmith devices
-swift run docksmith probe --device 1
+swift run DocksmithApp
 ```
 
-The number is temporary. Run `devices` again if you reconnect a device. See [installation](./getting-started/installation/) and [device connection](./guides/connect-a-device/) before probing.
+The app requires an explicit device choice. It displays connection type as USB when that can be confirmed, or Unknown when it cannot. Wi-Fi device operations have not been verified.
 
-## Current scope
+## What it manages
 
-The probe only requests device discovery, installed-app information, and Home Screen layout through `cfgutil`. It does not delete apps or edit layouts. The planned GUI, deletion previews, and layout editing are described on the [roadmap](./roadmap/).
+The Home Screen editor works with icons and folders. It does not manage widgets or their positions. Layout edits require a complete, supported layout read; unsupported entries and partial reads disable Apply. App inventory can still display decoded entries with a partial-result warning. The [CLI reference](./reference/cli/) describes the separate read-only probe, and the [roadmap](./roadmap/) tracks remaining work.
