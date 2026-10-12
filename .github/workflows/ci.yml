@@ -23,7 +23,7 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify host and toolchain
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}

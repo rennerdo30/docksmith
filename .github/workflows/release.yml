@@ -25,7 +25,7 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate tag, host, and toolchain
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -54,7 +54,7 @@ jobs:
           tar -xzf "dist/$archive" -C verify
           test "$(lipo -archs verify/docksmith)" = "$EXPECTED_ARCH"
           verify/docksmith --help
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: docksmith-${{ matrix.arch }}
           path: dist/*.tar.gz
@@ -69,7 +69,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: docksmith-*
           path: dist
