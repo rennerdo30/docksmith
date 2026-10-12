@@ -51,11 +51,13 @@ jobs:
           test "$(lipo -archs dist/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/Docksmith.app/Contents/Info.plist)" = "Docksmith.icns"
           test -s dist/Docksmith.app/Contents/Resources/Docksmith.icns
+          cmp LICENSE dist/Docksmith.app/Contents/Resources/LICENSE
           archive="dist/docksmith-ci-macos-${EXPECTED_ARCH}.app.zip"
           ditto -c -k --keepParent dist/Docksmith.app "$archive"
           mkdir -p dist/verify
           ditto -x -k "$archive" dist/verify
           test "$(lipo -archs dist/verify/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
+          cmp LICENSE dist/verify/Docksmith.app/Contents/Resources/LICENSE
       - uses: actions/upload-artifact@v7
         with:
           name: docksmith-app-${{ matrix.arch }}

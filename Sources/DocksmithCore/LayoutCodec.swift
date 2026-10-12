@@ -71,13 +71,30 @@ public enum LayoutCodec {
     }
 
     public static func semanticallyEqual(_ a: Data, _ b: Data) -> Bool {
-        guard let first = try? JSONSerialization.jsonObject(with: a),
-              let second = try? JSONSerialization.jsonObject(with: b),
-              let canonicalA = try? JSONSerialization.data(withJSONObject: first, options: [.sortedKeys, .fragmentsAllowed]),
-              let canonicalB = try? JSONSerialization.data(withJSONObject: second, options: [.sortedKeys, .fragmentsAllowed]) else {
+        guard let first = try? decode(a), let second = try? decode(b),
+              let canonicalA = try? canonicalLayout(first),
+              let canonicalB = try? canonicalLayout(second) else {
             return false
         }
         return canonicalA == canonicalB
+    }
+
+    private static func canonicalLayout(_ layout: HomeLayout) throws -> Data {
+        func page(_ nodes: [LayoutNode]) throws -> [Any] {
+            try nodes.map { node -> Any in
+                switch node {
+                case .icon(let identifier): return identifier
+                case .folder(let folder):
+                    // cfgutil can return a single folder page in either supported form.
+                    // Compare its contents, independent of encoding form and local UUID.
+                    return [folder.name] + (try folder.pages.map(page))
+                case .unknown(let raw):
+                    return try JSONSerialization.jsonObject(with: raw, options: [.fragmentsAllowed])
+                }
+            }
+        }
+        let raw: [Any] = try [page(layout.dock)] + layout.pages.map(page)
+        return try JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys])
     }
 
     private static func decodeNode(_ raw: Any) -> LayoutNode {

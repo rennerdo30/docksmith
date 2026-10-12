@@ -19,6 +19,21 @@ final class DeviceServiceTests: XCTestCase {
         XCTAssertThrowsError(try LayoutCodec.encode(layout))
     }
 
+    func testEquivalentFolderFormsCompareEqualButChangesDoNot() {
+        let flat = Data(#"[[],[["Work","com.example.one","com.example.two"]]]"#.utf8)
+        let paged = Data(#"[[],[["Work",["com.example.one","com.example.two"]]]]"#.utf8)
+        let reordered = Data(#"[[],[["Work",["com.example.two","com.example.one"]]]]"#.utf8)
+        let renamed = Data(#"[[],[["Other",["com.example.one","com.example.two"]]]]"#.utf8)
+        XCTAssertTrue(LayoutCodec.semanticallyEqual(flat, paged))
+        XCTAssertFalse(LayoutCodec.semanticallyEqual(flat, reordered))
+        XCTAssertFalse(LayoutCodec.semanticallyEqual(flat, renamed))
+        let unknownA = Data(#"[[],[{"future":true,"position":1}]]"#.utf8)
+        let unknownB = Data(#"[[],[{"position":1,"future":true}]]"#.utf8)
+        let unknownChanged = Data(#"[[],[{"position":2,"future":true}]]"#.utf8)
+        XCTAssertTrue(LayoutCodec.semanticallyEqual(unknownA, unknownB))
+        XCTAssertFalse(LayoutCodec.semanticallyEqual(unknownA, unknownChanged))
+    }
+
     func testStaleLayoutStopsBeforeWrite() async throws {
         let initial = Data(#"[["dock"],["first"]]"#.utf8)
         let changed = Data(#"[["dock"],["second"]]"#.utf8)

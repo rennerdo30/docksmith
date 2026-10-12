@@ -174,8 +174,15 @@ private struct LayoutTile: View {
         if case .icon = node {
             if !model.folderDestinations.isEmpty { Divider() }
             ForEach(model.folderDestinations, id: \.id) { folder in
-                if area != .folder(folder.id, 0), model.nodes(in: .folder(folder.id, 0)).count < 9 {
-                    Button("Folder: \(folder.name)") { model.move(index, from: area, to: .folder(folder.id, 0)) }
+                ForEach(0..<folder.pageCount, id: \.self) { page in
+                    if area != .folder(folder.id, page), model.nodes(in: .folder(folder.id, page)).count < 9 {
+                        Button("Folder: \(folder.name), Page \(page + 1)") {
+                            model.move(index, from: area, to: .folder(folder.id, page))
+                        }
+                    }
+                }
+                Button("New Page in Folder: \(folder.name)") {
+                    model.moveToNewFolderPage(index, from: area, folderID: folder.id)
                 }
             }
             if case .folder = area { /* Folder creation is available on pages and Dock. */ }

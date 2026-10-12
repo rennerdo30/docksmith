@@ -52,12 +52,14 @@ jobs:
           version="${version%%-*}"
           scripts/bundle-app.sh release "$version" "$GITHUB_RUN_NUMBER" dist
           test "$(lipo -archs dist/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
+          cmp LICENSE dist/Docksmith.app/Contents/Resources/LICENSE
           app_archive="docksmith-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.app.zip"
           ditto -c -k --keepParent dist/Docksmith.app "dist/$app_archive"
           ditto -x -k "dist/$app_archive" verify
           test "$(lipo -archs verify/Docksmith.app/Contents/MacOS/DocksmithApp)" = "$EXPECTED_ARCH"
           plutil -lint verify/Docksmith.app/Contents/Info.plist
           test -s verify/Docksmith.app/Contents/Resources/Docksmith.icns
+          cmp LICENSE verify/Docksmith.app/Contents/Resources/LICENSE
           cp .build/release/docksmith LICENSE README.md stage/
           cli_archive="docksmith-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.tar.gz"
           tar -czf "dist/$cli_archive" -C stage docksmith LICENSE README.md

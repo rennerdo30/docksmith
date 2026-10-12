@@ -23,11 +23,11 @@ extension WorkspaceModel {
         }
     }
 
-    var folderDestinations: [(id: UUID, name: String)] {
+    var folderDestinations: [(id: UUID, name: String, pageCount: Int)] {
         guard let draft else { return [] }
         return (draft.dock + draft.pages.flatMap { $0 }).compactMap { node in
             guard case .folder(let folder) = node else { return nil }
-            return (folder.id, folder.name)
+            return (folder.id, folder.name, folder.pages.count)
         }
     }
 
@@ -36,6 +36,9 @@ extension WorkspaceModel {
         var sourceNodes = nodes(in: source)
         guard sourceNodes.indices.contains(index) else { return }
         let node = sourceNodes.remove(at: index)
+        if case .folder = destination {
+            guard case .icon = node else { return }
+        }
         guard write(sourceNodes, to: source, in: &layout) else { return }
         var destinationNodes = read(destination, in: layout) ?? []
         switch destination {
@@ -61,6 +64,34 @@ extension WorkspaceModel {
         draft = layout
     }
 
+    func moveToNewFolderPage(_ index: Int, from source: LayoutArea, folderID: UUID) {
+        guard var layout = draft else { return }
+        var sourceNodes = nodes(in: source)
+        guard sourceNodes.indices.contains(index), case .icon = sourceNodes[index] else { return }
+        let node = sourceNodes.remove(at: index)
+        guard write(sourceNodes, to: source, in: &layout) else { return }
+        func appendPage(_ items: inout [LayoutNode]) -> Bool {
+            for item in items.indices {
+                if case .folder(var folder) = items[item], folder.id == folderID {
+                    folder.pages.append([node])
+                    folder.wasFlat = false
+                    items[item] = .folder(folder)
+                    return true
+                }
+            }
+            return false
+        }
+        var appended = appendPage(&layout.dock)
+        if !appended {
+            for page in layout.pages.indices {
+                if appendPage(&layout.pages[page]) { appended = true; break }
+            }
+        }
+        guard appended else { return }
+        normalize(&layout)
+        draft = layout
+    }
+
     func reorder(_ index: Int, in area: LayoutArea, by offset: Int) {
         guard var layout = draft else { return }
         var current = nodes(in: area)
@@ -71,6 +102,7 @@ extension WorkspaceModel {
     }
 
     func createFolder(at first: Int, with second: Int, in area: LayoutArea) {
+        if case .folder = area { return }
         guard var layout = draft, first != second else { return }
         var current = nodes(in: area)
         guard current.indices.contains(first), current.indices.contains(second),
