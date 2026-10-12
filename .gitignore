@@ -1,0 +1,15 @@
+.build/
+dist/
+node_modules/
+.astro/
+.swiftpm/
+.DS_Store
+*.xcuserstate
+local/
+reports/
+captures/
+exports/
+pairing/
+*.mobileconfig
+*.p12
+*.pem

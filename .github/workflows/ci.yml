@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Swift on ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify host and toolchain
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          xcrun swift --version
+          swift_major="$(xcrun swift --version | sed -nE 's/.*Swift version ([0-9]+).*/\1/p' | head -n 1)"
+          test "$swift_major" -ge 6
+      - name: Test and build
+        run: |
+          swift test
+          swift build -c release
+      - name: Check binary architecture and CLI help
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          file .build/release/docksmith
+          test "$(lipo -archs .build/release/docksmith)" = "$EXPECTED_ARCH"
+          .build/release/docksmith --help

@@ -1,0 +1,20 @@
+---
+title: Command line
+description: Read-only Docksmith CLI commands and report fields.
+---
+
+```text
+docksmith devices [--cfgutil PATH]
+docksmith probe (--device NUMBER | --ecid VALUE) [--cfgutil PATH]
+docksmith help
+```
+
+Run these with `swift run docksmith` from the repository root, or invoke a built `docksmith` executable directly.
+
+`devices` lists a transient number and device type for each currently connected device. A nonzero `cfgutil` discovery status can still yield a decoded list; the CLI prints a warning because that list may be partial.
+
+`probe` requires exactly one selection. `--device NUMBER` uses a number from `devices`; `--ecid VALUE` selects an exact device identifier for callers that already have one. Avoid placing identifiers in shared terminal logs, issue reports, or screenshots. The CLI discovers again before reading and fails if the chosen device is no longer present.
+
+The probe prints JSON with `backend`, `deviceCount`, `inventory`, and `layout`. Each check has a `state` of `supported`, `unavailable`, or `indeterminate`; `count` and `warning` are optional. `inventory.count` is the number of decoded app records. `layout.count` is the number of Home Screen pages, excluding the Dock. A successful decode with a nonzero `cfgutil` status remains `supported` but carries a warning that the result may be partial. An absent or malformed response is `indeterminate`; a reported device error is `unavailable`.
+
+Reports omit identifiers, app records, and layout contents. The CLI writes no local report. It makes read requests through `cfgutil` and has no device-changing command.

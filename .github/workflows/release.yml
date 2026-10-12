@@ -1,0 +1,106 @@
+name: Release CLI
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Package ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate tag, host, and toolchain
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          xcrun swift --version
+          swift_major="$(xcrun swift --version | sed -nE 's/.*Swift version ([0-9]+).*/\1/p' | head -n 1)"
+          test "$swift_major" -ge 6
+      - name: Test and build
+        run: |
+          swift test
+          swift build -c release
+      - name: Package and verify
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(lipo -archs .build/release/docksmith)" = "$EXPECTED_ARCH"
+          .build/release/docksmith --help
+          mkdir -p stage dist verify
+          cp .build/release/docksmith LICENSE README.md stage/
+          archive="docksmith-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.tar.gz"
+          tar -czf "dist/$archive" -C stage docksmith LICENSE README.md
+          tar -xzf "dist/$archive" -C verify
+          test "$(lipo -archs verify/docksmith)" = "$EXPECTED_ARCH"
+          verify/docksmith --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docksmith-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: docksmith-*
+          path: dist
+          merge-multiple: true
+      - name: Verify assets and checksums
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test -f "dist/docksmith-${RELEASE_TAG}-macos-arm64.tar.gz"
+          test -f "dist/docksmith-${RELEASE_TAG}-macos-x86_64.tar.gz"
+          cd dist
+          sha256sum "docksmith-${RELEASE_TAG}-macos-arm64.tar.gz" "docksmith-${RELEASE_TAG}-macos-x86_64.tar.gz" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Create and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          options=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then options+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" \
+            dist/docksmith-"$RELEASE_TAG"-macos-arm64.tar.gz \
+            dist/docksmith-"$RELEASE_TAG"-macos-x86_64.tar.gz \
+            dist/SHA256SUMS \
+            --verify-tag --draft "${options[@]}" \
+            --title "Docksmith $RELEASE_TAG" \
+            --notes "Read-only Docksmith CLI for macOS arm64 and x86_64. Requires a separately installed Apple Configurator for cfgutil. These binaries are unsigned and not notarized."
+          gh release edit "$RELEASE_TAG" --draft=false

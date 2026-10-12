@@ -1,0 +1,15 @@
+---
+title: Connect a device
+description: Establish device trust before using the read-only probe.
+---
+
+1. Connect the device to your Mac with a cable.
+2. Unlock the device and accept its trust prompt if one appears.
+3. Run `swift run docksmith devices` and choose the temporary number shown for the device.
+4. Run `swift run docksmith probe --device NUMBER`, replacing `NUMBER` with that number.
+
+The CLI discovers devices again before probing. A number may refer to a different device after a reconnect, so list devices again whenever the connection changes.
+
+## About Wi-Fi
+
+Apple's [Finder Wi-Fi sync instructions](https://support.apple.com/en-is/guide/mac-help/mchlada1d602/mac) begin with a cable connection: select the device in Finder, enable **Show this [device] when on Wi-Fi**, and click **Apply**. Docksmith has not verified that `cfgutil` reads work over Wi-Fi. Use a cable for the current documented probe workflow.

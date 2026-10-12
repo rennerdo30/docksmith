@@ -1,0 +1,24 @@
+---
+title: Docksmith
+description: Inspect connected Apple devices from macOS without changing them.
+---
+
+Docksmith is an early, open-source macOS tool for **read-only** inspection of connected Apple devices. Today it provides a Swift command-line probe. A native macOS app is planned, but is not part of this release.
+
+The CLI can list connected devices and check whether installed-app inventory and Home Screen layout can be decoded for a device you select. Its report contains status, counts, and warnings. It does not print app records, device identifiers, or layout contents, and it does not save a local report.
+
+## Try the current CLI
+
+You need macOS 14 or later, Swift 6, and Apple's separately installed Apple Configurator command-line tool, `cfgutil`. Docksmith does not bundle or redistribute Apple Configurator or `cfgutil`.
+
+```sh
+swift build
+swift run docksmith devices
+swift run docksmith probe --device 1
+```
+
+The number is temporary. Run `devices` again if you reconnect a device. See [installation](./getting-started/installation/) and [device connection](./guides/connect-a-device/) before probing.
+
+## Current scope
+
+The probe only requests device discovery, installed-app information, and Home Screen layout through `cfgutil`. It does not delete apps or edit layouts. The planned GUI, deletion previews, and layout editing are described on the [roadmap](./roadmap/).
