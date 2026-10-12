@@ -6,12 +6,14 @@ public struct USBDevicePresence: Sendable {
     public let productName: String
     public let vendorID: Int
     public let ecid: String?
+    public let udid: String?
 
-    public init(registryID: UInt64, productName: String, vendorID: Int, ecid: String?) {
+    public init(registryID: UInt64, productName: String, vendorID: Int, ecid: String?, udid: String? = nil) {
         self.registryID = registryID
         self.productName = productName
         self.vendorID = vendorID
         self.ecid = ecid
+        self.udid = udid
     }
 
     var isSupportedMobileDevice: Bool {
@@ -52,7 +54,8 @@ public struct IOKitUSBDeviceDiscovery: USBDeviceDiscovering {
             var registryID: UInt64 = 0
             guard IORegistryEntryGetRegistryEntryID(device, &registryID) == KERN_SUCCESS else { continue }
             let presence = USBDevicePresence(registryID: registryID, productName: product,
-                                             vendorID: vendor.intValue, ecid: Self.ecid(from: raw))
+                                             vendorID: vendor.intValue, ecid: Self.ecid(from: raw),
+                                             udid: (raw["USB Serial Number"] ?? raw["kUSBSerialNumberString"]) as? String)
             if presence.isSupportedMobileDevice { devices.append(presence) }
         }
         return devices
@@ -71,6 +74,12 @@ public struct IOKitUSBDeviceDiscovery: USBDeviceDiscovering {
 }
 
 enum DeviceIdentity {
+    static func canonicalUDID(_ raw: String) -> String? {
+        let value = raw.replacingOccurrences(of: "-", with: "").lowercased()
+        guard [24, 40].contains(value.count), value.range(of: #"^[0-9a-f]+$"#, options: .regularExpression) != nil else { return nil }
+        return value
+    }
+
     static func canonicalECID(_ raw: String) -> String? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.lowercased().hasPrefix("0x") {

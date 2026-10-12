@@ -49,6 +49,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var applyResult: ApplyResult?
     @Published var iconCache: [String: Data] = [:]
     @Published var showRemoveConfirmation = false
+    @Published var removalPlan: RemovalPlan?
     @Published var showApplyConfirmation = false
     @Published var showDiscardConfirmation = false
 
@@ -60,7 +61,16 @@ final class WorkspaceModel: ObservableObject {
 
     var selectedDevice: DeviceInfo? { devices.first { $0.id == selectedDeviceID } }
     var isBusy: Bool { busyMessage != nil }
-    var selectedDeviceReady: Bool { selectedDevice?.availability == .ready }
+    var selectedDeviceReady: Bool { selectedDevice?.capabilities.inventoryBackend == .cfgutil }
+    var canReadApps: Bool { selectedDevice?.capabilities.canReadApps == true }
+    var canRemoveApps: Bool { selectedDevice?.capabilities.canRemoveApps == true }
+    func canSelectForRemoval(_ app: InstalledApp) -> Bool {
+        guard canRemoveApps, app.isFromInventory else { return false }
+        if selectedDevice?.capabilities.inventoryBackend == .coreDevice {
+            return app.isRemovable == true && app.isHidden == false && app.isInternal == false
+        }
+        return true
+    }
     var selectionLocked: Bool { isBusy || showRemoveConfirmation || showApplyConfirmation }
     var hasDraftChanges: Bool { baseline?.layout != nil && draft != baseline?.layout }
     var canEditLayout: Bool { selectedDeviceReady && !isBusy && baseline?.isPartial == false && !hasUnknownLayoutEntries }
@@ -124,6 +134,7 @@ final class WorkspaceModel: ObservableObject {
         baseline = nil
         draft = nil
         selectedApps = []
+        removalPlan = nil
         search = ""
         removalResults = []
         applyResult = nil
@@ -205,15 +216,15 @@ final class WorkspaceModel: ObservableObject {
         draft = nil
         selectedApps = []
         iconCache = [:]
-        guard selectedDeviceReady else { return }
+        guard canReadApps else { return }
         busyMessage = "Reading device…"
         errorMessage = nil
         defer { if token == generation { busyMessage = nil } }
         do {
             let service = try configuredService()
-            async let apps = service.loadInventory(deviceID: selectedDeviceID)
-            async let layout = service.loadLayout(deviceID: selectedDeviceID)
-            let (loadedApps, loadedLayout) = try await (apps, layout)
+            let snapshot = try await service.loadSnapshot(deviceID: selectedDeviceID)
+            let loadedApps = snapshot.inventory
+            let loadedLayout = snapshot.layout
             guard token == generation, self.selectedDeviceID == selectedDeviceID else { return }
             inventory = loadedApps
             baseline = loadedLayout
@@ -239,22 +250,23 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func removeSelectedApps() async {
-        guard selectedDeviceReady, let selectedDeviceID, !selectedApps.isEmpty, !hasDraftChanges, !isBusy else { return }
-        let ids = Array(selectedApps)
-        resultNames = Dictionary(uniqueKeysWithValues: ids.map { ($0, displayName(for: $0)) })
+        guard canRemoveApps, let selectedDeviceID, let plan = removalPlan,
+              plan.deviceID == selectedDeviceID, !hasDraftChanges, !isBusy else { return }
         busyMessage = "Removing selected apps…"
         showRemoveConfirmation = false
         errorMessage = nil
-        defer { busyMessage = nil }
+        defer { busyMessage = nil; removalPlan = nil }
         do {
             let service = try configuredService()
-            removalResults = try await service.removeApps(deviceID: selectedDeviceID, ids: ids)
+            removalResults = try await service.executeRemoval(plan)
             selectedApps = []
             inventory = nil
             inventory = try await service.loadInventory(deviceID: selectedDeviceID)
-            let updatedLayout = try await service.loadLayout(deviceID: selectedDeviceID)
-            baseline = updatedLayout
-            draft = updatedLayout.layout
+            if selectedDevice?.capabilities.canReadLayout == true {
+                let updatedLayout = try await service.loadLayout(deviceID: selectedDeviceID)
+                baseline = updatedLayout
+                draft = updatedLayout.layout
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -280,6 +292,18 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func revertDraft() { draft = baseline?.layout }
+
+    func reviewRemoval() async {
+        guard canRemoveApps, let selectedDeviceID, !selectedApps.isEmpty, !isBusy, !hasDraftChanges else { return }
+        busyMessage = "Preparing removal review…"
+        errorMessage = nil
+        defer { busyMessage = nil }
+        do {
+            removalPlan = try await configuredService().prepareRemoval(deviceID: selectedDeviceID, ids: Array(selectedApps))
+            resultNames = Dictionary(uniqueKeysWithValues: (removalPlan?.ids ?? []).map { ($0, displayName(for: $0)) })
+            showRemoveConfirmation = true
+        } catch { removalPlan = nil; errorMessage = error.localizedDescription }
+    }
 
     func openConfigurator() {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.configurator.ui") else {

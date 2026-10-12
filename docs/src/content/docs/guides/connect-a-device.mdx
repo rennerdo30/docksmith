@@ -10,7 +10,7 @@ description: Establish device trust before using Docksmith.
 
 The app keeps the selected device explicit. If it disconnects, refresh and choose again. The separate CLI uses transient numbers; run `devices` again after reconnecting before probing.
 
-If the picker shows **Configurator unavailable**, macOS detects your device over USB but Apple Configurator cannot access it yet. Select it to see the connection diagnosis, open Apple Configurator, and use **Retry Connection** after the device appears there. Docksmith keeps app reads and device changes disabled in this state; USB detection alone does not establish management access. A successful retry loads the selected device automatically. This USB discovery uses macOS APIs and does not require Xcode.
+If the picker shows **Configurator unavailable**, macOS detects your device over USB but Apple Configurator cannot access it yet. Select it to see the connection diagnosis, open Apple Configurator, and use **Retry Connection** after the device appears there. USB detection alone does not establish management access. If Xcode is installed and can access the device, **Apps via Xcode** enables the complete app inventory and, when supported, removal of apps explicitly reported as removable. Hidden, internal and indeterminate records remain unselectable. The removal review names its backend and requires confirmation. Home Screen editing still requires Configurator. Without either backend, reads and changes remain disabled. A successful retry loads the selected device automatically. This USB discovery uses macOS APIs and does not require Xcode.
 
 ## About Wi-Fi
 

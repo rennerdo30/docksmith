@@ -17,14 +17,14 @@ struct WorkspaceView: View {
                 )) {
                     Text("Choose a device").tag(String?.none)
                     ForEach(model.devices) { device in
-                        Text(device.displayName + (device.availability == .ready ? "" : " · Configurator unavailable")).tag(Optional(device.id))
+                        Text(device.displayName + (device.capabilities.inventoryBackend == .coreDevice ? " · Apps via Xcode" : (device.availability == .ready ? "" : " · Configurator unavailable"))).tag(Optional(device.id))
                     }
                 }
                 .labelsHidden()
                 .disabled(model.selectionLocked || model.devices.isEmpty)
 
                 if let device = model.selectedDevice {
-                    Label(device.availability == .ready ? device.transport : "USB detected · Configurator unavailable", systemImage: device.transport == "USB" ? "cable.connector" : "questionmark.circle")
+                    Label(device.capabilities.inventoryBackend == .coreDevice ? "\(device.transport) · Apps via Xcode" : (device.availability == .ready ? device.transport : "USB detected · Configurator unavailable"), systemImage: device.transport == "USB" ? "cable.connector" : "questionmark.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -63,6 +63,12 @@ struct WorkspaceView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
+                }
+                if model.selectedDevice?.capabilities.inventoryBackend == .coreDevice {
+                    Label(model.selectedDevice?.diagnostic ?? "Apps loaded using Xcode. Home Screen editing requires Apple Configurator access.", systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
                 }
                 content
             }
@@ -103,9 +109,10 @@ struct WorkspaceView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if let device = model.selectedDevice, device.availability != .ready {
+        if let device = model.selectedDevice, model.section != .connection,
+           !device.capabilities.canReadApps || (model.section == .home && !device.capabilities.canReadLayout) {
             ContentUnavailableView {
-                Label("USB detected", systemImage: "iphone.and.arrow.forward")
+                Label(device.capabilities.canReadApps ? "Home Screen unavailable" : "USB detected", systemImage: "iphone.and.arrow.forward")
             } description: {
                 VStack(spacing: 12) {
                     Text(device.diagnostic ?? "Your device is connected to this Mac, but Apple Configurator cannot currently access it.")
@@ -117,7 +124,7 @@ struct WorkspaceView: View {
                 Button("Open Apple Configurator") { model.openConfigurator() }
                 Button("Choose cfgutil…") { model.chooseCfgutil() }.disabled(model.selectionLocked)
             }
-        } else if model.setupRequired {
+        } else if model.setupRequired && !model.canReadApps && model.section != .connection {
             ContentUnavailableView {
                 Label("Apple Configurator Required", systemImage: "shippingbox")
             } description: {
@@ -172,7 +179,7 @@ struct AppsView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Apps").font(.largeTitle.bold())
                 Spacer()
-                if let inventory = model.inventory {
+                if let inventory = model.inventory, inventory.isDecoded {
                     Text("\(inventory.apps.count) installed")
                         .foregroundStyle(.secondary)
                 }
@@ -193,6 +200,8 @@ struct AppsView: View {
 
             if model.inventory == nil {
                 ContentUnavailableView("Choose a device", systemImage: "iphone", description: Text("Select a connected device to load its apps."))
+            } else if model.inventory?.isDecoded == false {
+                ContentUnavailableView("Inventory unavailable", systemImage: "exclamationmark.triangle", description: Text("The device did not return a complete app inventory. Retry Connection to read it again."))
             } else if model.visibleApps.isEmpty {
                 ContentUnavailableView.search(text: model.search)
             } else {
@@ -206,7 +215,7 @@ struct AppsView: View {
                             }
                         ))
                         .labelsHidden()
-                        .disabled(model.isBusy || !app.isFromInventory)
+                        .disabled(model.isBusy || !model.canSelectForRemoval(app))
                         AppArtwork(app: app, name: model.displayName(for: app.id), iconData: model.iconCache[app.id])
                             .task(id: "\(app.id):\(model.isBusy)") { await model.loadIconIfNeeded(for: app.id) }
                         VStack(alignment: .leading, spacing: 2) {
@@ -218,12 +227,21 @@ struct AppsView: View {
                             if let version = app.version {
                                 Text("Version \(version)").font(.caption).foregroundStyle(.secondary)
                             }
+                            if app.isHidden == true { Text("Hidden app").font(.caption).foregroundStyle(.secondary) }
+                            if app.isInternal == true { Text("Internal app").font(.caption).foregroundStyle(.secondary) }
+                            if model.selectedDevice?.capabilities.inventoryBackend == .coreDevice {
+                                if app.isRemovable == false {
+                                    Text("Not removable").font(.caption).foregroundStyle(.secondary)
+                                } else if app.isRemovable == nil || app.isHidden == nil || app.isInternal == nil {
+                                    Text("Removal availability unknown").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
                         }
                         Spacer()
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        guard !model.isBusy, app.isFromInventory else { return }
+                        guard !model.isBusy, model.canSelectForRemoval(app) else { return }
                         if model.selectedApps.contains(app.id) { model.selectedApps.remove(app.id) }
                         else { model.selectedApps.insert(app.id) }
                     }
@@ -237,7 +255,7 @@ struct AppsView: View {
                     Text("\(model.selectedApps.count) apps selected")
                     Spacer()
                     Button("Remove Selected…", role: .destructive) {
-                        model.showRemoveConfirmation = true
+                        Task { await model.reviewRemoval() }
                     }
                     .disabled(model.isBusy || model.hasDraftChanges)
                 }
@@ -258,15 +276,16 @@ private struct RemoveConfirmationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Remove \(model.selectedApps.count) apps?", systemImage: "trash")
+            Label("Remove \(model.removalPlan?.ids.count ?? 0) apps?", systemImage: "trash")
                 .font(.title2.bold())
                 .foregroundStyle(.red)
             Text("From \(model.selectedDevice?.displayName ?? "the selected device").")
             Text("Removing apps can delete their local data. Review every app before continuing.")
                 .foregroundStyle(.secondary)
+            Text("Remove using \(model.removalPlan?.backendName ?? "the selected backend").")
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(model.selectedApps).sorted(by: { model.displayName(for: $0) < model.displayName(for: $1) }), id: \.self) { id in
+                    ForEach((model.removalPlan?.ids ?? []).sorted(by: { model.displayName(for: $0) < model.displayName(for: $1) }), id: \.self) { id in
                         VStack(alignment: .leading) {
                             Text("• \(model.displayName(for: id))")
                             if model.displayName(for: id) == "Unrecognized app" {
@@ -282,7 +301,7 @@ private struct RemoveConfirmationView: View {
                 Spacer()
                 Button("Cancel") { model.showRemoveConfirmation = false }
                     .keyboardShortcut(.cancelAction)
-                Button("Remove \(model.selectedApps.count) Apps", role: .destructive) {
+                Button("Remove \(model.removalPlan?.ids.count ?? 0) Apps", role: .destructive) {
                     Task { await model.removeSelectedApps() }
                 }
             }

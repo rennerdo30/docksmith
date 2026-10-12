@@ -99,6 +99,12 @@ public final class ProcessCfgutilRunner: CfgutilRunning, @unchecked Sendable {
             throw RunnerError.unsupportedInvocation
         }
         if isIcon && directory == nil { throw RunnerError.invalidWorkingDirectory }
+        return try BoundedProcess.run(executableURL: executableURL, arguments: arguments, directory: directory, timeout: timeout)
+    }
+}
+
+struct BoundedProcess {
+    static func run(executableURL: URL, arguments: [String], directory: URL? = nil, timeout: TimeInterval) throws -> CommandResult {
         let process = Process()
         let out = Pipe()
         let err = Pipe()

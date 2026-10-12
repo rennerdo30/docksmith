@@ -124,5 +124,5 @@ jobs:
             dist/SHA256SUMS \
             --verify-tag --draft "${options[@]}" \
             --title "Docksmith $RELEASE_TAG" \
-            --notes "Docksmith native macOS app and companion CLI for arm64 and x86_64. Apple Configurator is required separately for cfgutil. These binaries are unsigned and not notarized."
+            --notes "Docksmith native macOS app and companion CLI for arm64 and x86_64. Apple Configurator provides Home Screen editing and cfgutil app management; optional Xcode provides app inventory and supported removal. These binaries are unsigned and not notarized."
           gh release edit "$RELEASE_TAG" --draft=false

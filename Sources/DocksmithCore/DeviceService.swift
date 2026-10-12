@@ -28,17 +28,21 @@ public enum DeviceServiceError: LocalizedError {
 public actor DeviceService {
     private let runner: (any CfgutilRunning)?
     private let hardware: any USBDeviceDiscovering
+    private let coreDevice: (any CoreDeviceProviding)?
     private var rememberedNames: [String: String] = [:]
     public var isBackendConfigured: Bool { runner != nil }
 
     public init(cfgutilPath: String? = nil) throws {
         runner = try? ProcessCfgutilRunner(path: cfgutilPath)
         hardware = IOKitUSBDeviceDiscovery()
+        coreDevice = CoreDeviceProvider()
     }
 
-    public init(runner: any CfgutilRunning, hardware: any USBDeviceDiscovering = EmptyUSBDeviceDiscovery()) {
+    public init(runner: any CfgutilRunning, hardware: any USBDeviceDiscovering = EmptyUSBDeviceDiscovery(),
+                coreDevice: (any CoreDeviceProviding)? = nil) {
         self.runner = runner
         self.hardware = hardware
+        self.coreDevice = coreDevice
     }
 
     public func discover() throws -> [DeviceInfo] {
@@ -84,12 +88,39 @@ public actor DeviceService {
                                              diagnostic: "Your \(device.productName) is connected to this Mac, but Apple Configurator cannot currently access it.")
             }
         }
+        if let coreDevice, let discovered = try? coreDevice.discover() {
+            let canRemove = (try? coreDevice.supportsAppRemoval()) == true
+            for device in discovered {
+                let ecid = device.ecid.flatMap(DeviceIdentity.canonicalECID)
+                let udid = device.udid.flatMap(DeviceIdentity.canonicalUDID)
+                let exactUSB = usbDevices.first { usb in
+                    guard usb.isSupportedMobileDevice else { return false }
+                    if let ecid, usb.ecid.flatMap(DeviceIdentity.canonicalECID) == ecid { return true }
+                    return udid != nil && usb.udid.flatMap(DeviceIdentity.canonicalUDID) == udid
+                }
+                let identity = exactUSB.map {
+                    $0.ecid.flatMap(DeviceIdentity.canonicalECID) ?? "usb-registry:\($0.registryID)"
+                } ?? ecid ?? "coredevice:\(device.identifier)"
+                if merged[identity]?.capabilities.inventoryBackend == .cfgutil { continue }
+                merged[identity] = DeviceInfo(id: identity, displayName: device.name, model: device.model,
+                                             transport: exactUSB == nil ? device.transport : "USB",
+                                             availability: .usbDetectedBackendUnavailable,
+                                             diagnostic: canRemove ? "Apps loaded using Xcode. Supported removable apps can be removed using Xcode; Home Screen editing requires Apple Configurator access." : "Apps loaded using Xcode. App removal and Home Screen editing require Apple Configurator access.",
+                                             backendIdentifier: device.identifier,
+                                             capabilities: DeviceCapabilities(inventoryBackend: .coreDevice, canRemoveApps: canRemove))
+                rememberedNames[identity] = device.name
+            }
+        }
         if merged.isEmpty, let backendFailure { throw backendFailure }
         return merged.values.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     public func loadInventory(deviceID: String) throws -> InventorySnapshot {
-        let target = try requireDevice(deviceID).backendIdentifier
+        let device = try requireDevice(deviceID, allowReadOnlyApps: true)
+        let target = device.backendIdentifier
+        if device.capabilities.inventoryBackend == .coreDevice, let coreDevice {
+            return try coreDevice.loadInventory(identifier: target, deviceID: deviceID)
+        }
         let result = try run(["--format", "JSON", "--ecid", target, "get", "installedApps"])
         guard !result.timedOut,
               let root = Self.jsonObject(result.stdout) as? [String: Any],
@@ -133,7 +164,17 @@ public actor DeviceService {
             throw DeviceServiceError.deviceMissing
         }
         let inventory = try loadInventory(deviceID: deviceID)
-        let layout = try loadLayout(deviceID: deviceID)
+        let layout: LayoutSnapshot
+        if device.capabilities.canReadLayout {
+            do { layout = try loadLayout(deviceID: deviceID) }
+            catch {
+                layout = LayoutSnapshot(deviceID: deviceID, capturedAt: Date(), rawJSON: Data(), layout: nil,
+                                        warning: "Home Screen layout could not be read. App inventory remains available.", isPartial: true)
+            }
+        } else {
+            layout = LayoutSnapshot(deviceID: deviceID, capturedAt: Date(), rawJSON: Data(), layout: nil,
+                                    warning: "Home Screen editing requires Apple Configurator access.", isPartial: true)
+        }
         guard let homeLayout = layout.layout else {
             return DeviceSnapshot(device: device, inventory: inventory, layout: layout)
         }
@@ -170,34 +211,81 @@ public actor DeviceService {
         return nil
     }
 
-    public func removeApps(deviceID: String, ids: [String]) throws -> [RemovalResult] {
-        let target = try requireDevice(deviceID).backendIdentifier
+    public func prepareRemoval(deviceID: String, ids: [String]) throws -> RemovalPlan {
+        let device = try requireDevice(deviceID, allowReadOnlyApps: true)
         let unique = Array(Set(ids)).sorted()
+        guard device.capabilities.canRemoveApps else { throw DeviceServiceError.backendUnavailable }
         guard !unique.isEmpty, unique.allSatisfy(Self.validBundleID) else {
             throw DeviceServiceError.invalidSelection
         }
-        let inventory = try loadInventory(deviceID: deviceID)
-        guard inventory.isDecoded else { throw DeviceServiceError.inventoryUnavailable }
-        let installed = Set(inventory.apps.map(\.id))
+        return RemovalPlan(deviceID: deviceID, backend: device.capabilities.inventoryBackend, ids: unique, target: device.backendIdentifier)
+    }
+
+    public func removeApps(deviceID: String, ids: [String]) throws -> [RemovalResult] {
+        try executeRemoval(prepareRemoval(deviceID: deviceID, ids: ids))
+    }
+
+    public func executeRemoval(_ plan: RemovalPlan) throws -> [RemovalResult] {
+        _ = try requirePinnedDevice(plan)
+        let inventory = try loadInventory(deviceID: plan.deviceID)
+        guard inventory.isDecoded, plan.backend != .coreDevice || !inventory.isPartial else { throw DeviceServiceError.inventoryUnavailable }
+        _ = try requirePinnedDevice(plan)
+        let installed = Dictionary(inventory.apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var outcomes: [RemovalResult] = []
-        for id in unique {
-            guard installed.contains(id) else {
+        var interrupted = false
+        for id in plan.ids {
+            if interrupted {
+                outcomes.append(RemovalResult(id: id, success: false, message: "Not attempted because device access changed. Review the selection again."))
+                continue
+            }
+            guard let app = installed[id] else {
                 outcomes.append(RemovalResult(id: id, success: false, message: "App is not present in the fresh installed-app inventory."))
                 continue
             }
-            let result = try run(["--format", "JSON", "--ecid", target, "remove-app", id])
-            let commandSucceeded = !result.timedOut && result.exitCode == 0 && !Self.responseHasSelectedError(result.stdout, id: target)
-            outcomes.append(RemovalResult(id: id, success: commandSucceeded,
-                                          message: commandSucceeded ? "Removal command completed; verifying." : "Removal failed or its result is uncertain."))
+            if plan.backend == .coreDevice && (app.isRemovable != true || app.isHidden != false || app.isInternal != false) {
+                outcomes.append(RemovalResult(id: id, success: false, message: "Xcode did not report this app as a supported removable app."))
+                continue
+            }
+            do { _ = try requirePinnedDevice(plan) }
+            catch {
+                interrupted = true
+                outcomes.append(RemovalResult(id: id, success: false, message: "Not attempted because device access changed. Review the selection again."))
+                continue
+            }
+            do {
+                let succeeded: Bool
+                if plan.backend == .coreDevice, let coreDevice {
+                    succeeded = try coreDevice.removeApp(identifier: plan.target, bundleID: id)
+                } else {
+                    let result = try run(["--format", "JSON", "--ecid", plan.target, "remove-app", id])
+                    succeeded = !result.timedOut && result.exitCode == 0 && !Self.responseHasSelectedError(result.stdout, id: plan.target)
+                }
+                outcomes.append(RemovalResult(id: id, success: succeeded,
+                                              message: succeeded ? "Removal command completed; verifying." : "Removal failed or its result is uncertain. Reload before retrying."))
+            } catch {
+                outcomes.append(RemovalResult(id: id, success: false, message: "Device access changed or removal failed. Reload before retrying."))
+            }
         }
-        let refreshed = try loadInventory(deviceID: deviceID)
-        let remaining = Set(refreshed.apps.map(\.id))
+        var refreshed: InventorySnapshot?
+        do {
+            _ = try requirePinnedDevice(plan)
+            refreshed = try loadInventory(deviceID: plan.deviceID)
+            _ = try requirePinnedDevice(plan)
+        } catch { refreshed = nil }
+        let remaining = Set(refreshed?.apps.map(\.id) ?? [])
         return outcomes.map { result in
             guard result.success else { return result }
-            let verified = refreshed.isDecoded && !refreshed.isPartial && !remaining.contains(result.id)
+            let verified = refreshed?.isDecoded == true && refreshed?.isPartial == false && !remaining.contains(result.id)
             return RemovalResult(id: result.id, success: verified,
                                  message: verified ? "App removal verified." : "Removal could not be verified from a fresh inventory.")
         }
+    }
+
+    private func requirePinnedDevice(_ plan: RemovalPlan) throws -> DeviceInfo {
+        let device = try requireDevice(plan.deviceID, allowReadOnlyApps: true)
+        guard device.capabilities.canRemoveApps, device.capabilities.inventoryBackend == plan.backend,
+              device.backendIdentifier == plan.target else { throw DeviceServiceError.backendUnavailable }
+        return device
     }
 
     public func applyLayout(deviceID: String, baseline: LayoutSnapshot, draft: HomeLayout) throws -> ApplyResult {
@@ -242,11 +330,11 @@ public actor DeviceService {
                            backupURL: backup)
     }
 
-    private func requireDevice(_ id: String) throws -> DeviceInfo {
+    private func requireDevice(_ id: String, allowReadOnlyApps: Bool = false) throws -> DeviceInfo {
         guard !id.isEmpty, let device = try discover().first(where: { $0.id == id }) else {
             throw DeviceServiceError.deviceMissing
         }
-        guard device.availability == .ready else { throw DeviceServiceError.backendUnavailable }
+        guard device.capabilities.inventoryBackend == .cfgutil || (allowReadOnlyApps && device.capabilities.canReadApps) else { throw DeviceServiceError.backendUnavailable }
         return device
     }
 

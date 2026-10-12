@@ -5,22 +5,39 @@ public enum DeviceAvailability: Sendable {
     case usbDetectedBackendUnavailable
 }
 
+public enum InventoryBackend: Sendable { case cfgutil, coreDevice, none }
+
+public struct DeviceCapabilities: Sendable {
+    public let inventoryBackend: InventoryBackend
+    public var canReadApps: Bool { inventoryBackend != .none }
+    public var canReadLayout: Bool { inventoryBackend == .cfgutil }
+    public var canApplyLayout: Bool { inventoryBackend == .cfgutil }
+    public let canRemoveApps: Bool
+    public var canReadIcons: Bool { inventoryBackend == .cfgutil }
+    public init(inventoryBackend: InventoryBackend, canRemoveApps: Bool? = nil) {
+        self.inventoryBackend = inventoryBackend
+        self.canRemoveApps = canRemoveApps ?? (inventoryBackend == .cfgutil)
+    }
+}
+
 public struct DeviceInfo: Identifiable, Sendable {
     public let id: String
     public let displayName: String
     public let model: String?
     public let transport: String
     public let availability: DeviceAvailability
+    public let capabilities: DeviceCapabilities
     public let diagnostic: String?
     let backendIdentifier: String
 
     public init(id: String, displayName: String, model: String?, transport: String,
                 availability: DeviceAvailability = .ready, diagnostic: String? = nil,
-                backendIdentifier: String? = nil) {
+                backendIdentifier: String? = nil, capabilities: DeviceCapabilities? = nil) {
         self.id = id
         self.displayName = displayName
         self.model = model
         self.transport = transport
+        self.capabilities = capabilities ?? DeviceCapabilities(inventoryBackend: availability == .ready ? .cfgutil : .none)
         self.availability = availability
         self.diagnostic = diagnostic
         self.backendIdentifier = backendIdentifier ?? id
@@ -33,14 +50,21 @@ public struct InstalledApp: Identifiable, Sendable {
     public let version: String?
     public let iconData: Data?
     public let isFromInventory: Bool
+    public let isRemovable: Bool?
+    public let isHidden: Bool?
+    public let isInternal: Bool?
 
     public init(id: String, name: String, version: String? = nil,
-                iconData: Data? = nil, isFromInventory: Bool = true) {
+                iconData: Data? = nil, isFromInventory: Bool = true,
+                isRemovable: Bool? = nil, isHidden: Bool? = nil, isInternal: Bool? = nil) {
         self.id = id
         self.name = name
         self.version = version
         self.iconData = iconData
         self.isFromInventory = isFromInventory
+        self.isRemovable = isRemovable
+        self.isHidden = isHidden
+        self.isInternal = isInternal
     }
 }
 
@@ -204,4 +228,12 @@ public enum AppNames {
     }
 
     static func knownName(for identifier: String) -> String? { known[identifier] }
+}
+
+public struct RemovalPlan: Sendable {
+    public let deviceID: String
+    public let backend: InventoryBackend
+    public let ids: [String]
+    let target: String
+    public var backendName: String { backend == .coreDevice ? "Xcode" : "Apple Configurator" }
 }

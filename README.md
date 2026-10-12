@@ -4,7 +4,7 @@
 
 Docksmith is an open-source native macOS app for browsing connected Apple devices, reviewing installed apps, and arranging a Home Screen layout. It uses Apple's separately installed `cfgutil` from Apple Configurator; Docksmith does not redistribute it. The package also contains a reusable `DocksmithCore` library and a read-only `docksmith` CLI probe.
 
-Requires macOS 14 or later and Apple Configurator. Connect and unlock a device, then accept its trust prompt. Download the `.app.zip` for your Mac's architecture from a tagged release, expand it, and open `Docksmith.app`. Release builds are currently unsigned and unnotarized. To build locally with Swift 6:
+Requires macOS 14 or later. Apple Configurator provides Home Screen editing and app management through `cfgutil`. Optional Xcode provides a second app-inventory backend and removal of apps explicitly reported as removable when its uninstall command is available. Xcode is not required for USB discovery or Configurator access. Connect and unlock a device, then accept its trust prompt. Download the `.app.zip` for your Mac's architecture from a tagged release, expand it, and open `Docksmith.app`. Release builds are currently unsigned and unnotarized. To build locally with Swift 6:
 
 ```sh
 swift test
@@ -13,7 +13,7 @@ scripts/bundle-app.sh release 0.1.0 1 dist
 open dist/Docksmith.app
 ```
 
-For development, `swift run DocksmithApp` starts the native UI. The app offers a named device picker, app search and removal review, and a Dock/page/folder layout editor with a separate apply review. App removal and layout changes require explicit confirmation in the UI. Before a layout write, Docksmith checks that the device's layout has not changed and saves a private original-layout backup under `~/Library/Application Support/Docksmith/Backups`. If a device response is partial or a layout contains unsupported entries, editing is limited. The app requests available app icons from the selected device; some icons may be unavailable.
+For development, `swift run DocksmithApp` starts the native UI. The app offers a named device picker, app search and removal review, and a Dock/page/folder layout editor with a separate apply review. App removal and layout changes require explicit confirmation in the UI. Before a layout write, Docksmith checks that the device's layout has not changed and saves a private original-layout backup under `~/Library/Application Support/Docksmith/Backups`. If a device response is partial or a layout contains unsupported entries, editing is limited. The app requests available app icons through Configurator; Xcode inventory uses monograms. Inventory includes system, hidden and internal apps when reported. Xcode removal excludes protected, hidden, internal and indeterminate records. Removal review freezes the exact device and backend, rechecks fresh inventory before writing, and verifies absence from a complete fresh inventory afterward. Home Screen editing remains Configurator-only.
 
 The companion CLI remains read-only:
 
