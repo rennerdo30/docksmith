@@ -42,6 +42,9 @@ final class WorkspaceModel: ObservableObject {
     @Published var draft: HomeLayout?
     @Published var selectedApps: Set<String> = []
     @Published var search = ""
+    @Published var removableOnly = false
+    @Published var lastSuccessfulRefresh: Date?
+    @Published var reviewDeviceName = ""
     @Published var busyMessage: String?
     @Published var errorMessage: String?
     @Published var setupRequired = false
@@ -65,12 +68,15 @@ final class WorkspaceModel: ObservableObject {
     var canReadApps: Bool { selectedDevice?.capabilities.canReadApps == true }
     var canRemoveApps: Bool { selectedDevice?.capabilities.canRemoveApps == true }
     func canSelectForRemoval(_ app: InstalledApp) -> Bool {
-        guard canRemoveApps, app.isFromInventory else { return false }
-        if selectedDevice?.capabilities.inventoryBackend == .coreDevice {
-            return app.isRemovable == true && app.isHidden == false && app.isInternal == false
-        }
-        return true
+        canRemoveApps && AppSelection.isEligible(app, backend: inventory?.source ?? .none)
     }
+    func selectShownRemovable() {
+        guard !selectionLocked, canRemoveApps else { return }
+        selectedApps = AppSelection.selectingShown(selectedApps, apps: visibleApps, backend: inventory?.source ?? .none)
+    }
+    func clearSelection() { guard !selectionLocked else { return }; selectedApps = [] }
+    var hiddenSelectedCount: Int { selectedApps.subtracting(visibleApps.map(\.id)).count }
+
     var selectionLocked: Bool { isBusy || showRemoveConfirmation || showApplyConfirmation }
     var hasDraftChanges: Bool { baseline?.layout != nil && draft != baseline?.layout }
     var canEditLayout: Bool { selectedDeviceReady && !isBusy && baseline?.isPartial == false && !hasUnknownLayoutEntries }
@@ -89,9 +95,8 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var visibleApps: [InstalledApp] {
-        let apps = inventory?.apps ?? []
-        guard !search.isEmpty else { return apps }
-        return apps.filter { $0.name.localizedCaseInsensitiveContains(search) }
+        AppSelection.visible(inventory?.apps ?? [], search: search, removableOnly: removableOnly,
+                             backend: inventory?.source ?? .none)
     }
 
     func displayName(for identifier: String) -> String {
@@ -145,7 +150,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func chooseCfgutil() {
-        guard !hasDraftChanges, !isBusy else { return }
+        guard !hasDraftChanges, !selectionLocked else { return }
         let panel = NSOpenPanel()
         panel.message = "Choose Apple's cfgutil executable"
         panel.canChooseFiles = true
@@ -154,6 +159,16 @@ final class WorkspaceModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         UserDefaults.standard.set(url.path, forKey: "cfgutilPath")
         service = nil
+        generation += 1
+        inventory = nil
+        baseline = nil
+        draft = nil
+        selectedApps = []
+        removalPlan = nil
+        iconCache = [:]
+        resultNames = [:]
+        removalResults = []
+        applyResult = nil
         setupRequired = false
         Task { await refreshDevices() }
     }
@@ -174,6 +189,8 @@ final class WorkspaceModel: ObservableObject {
             let backend = try configuredService()
             let found = try await backend.discover()
             devices = found
+            lastSuccessfulRefresh = Date()
+            removalPlan = nil
             setupRequired = !(await backend.isBackendConfigured)
             if let selectedDeviceID, !found.contains(where: { $0.id == selectedDeviceID }) {
                 self.selectedDeviceID = nil
@@ -200,6 +217,7 @@ final class WorkspaceModel: ObservableObject {
             baseline = nil
             draft = nil
             selectedApps = []
+            removalPlan = nil
             iconCache = [:]
             removalResults = []
             applyResult = nil
@@ -215,6 +233,7 @@ final class WorkspaceModel: ObservableObject {
         baseline = nil
         draft = nil
         selectedApps = []
+        removalPlan = nil
         iconCache = [:]
         guard canReadApps else { return }
         busyMessage = "Reading device…"
@@ -300,7 +319,11 @@ final class WorkspaceModel: ObservableObject {
         defer { busyMessage = nil }
         do {
             removalPlan = try await configuredService().prepareRemoval(deviceID: selectedDeviceID, ids: Array(selectedApps))
-            resultNames = Dictionary(uniqueKeysWithValues: (removalPlan?.ids ?? []).map { ($0, displayName(for: $0)) })
+            reviewDeviceName = selectedDevice?.displayName ?? "Selected device"
+            resultNames = Dictionary(uniqueKeysWithValues: (removalPlan?.ids ?? []).map { id in
+                let name = AppNames.displayName(for: id, in: inventory?.apps ?? [])
+                return (id, name == id ? "Unrecognized app" : name)
+            })
             showRemoveConfirmation = true
         } catch { removalPlan = nil; errorMessage = error.localizedDescription }
     }

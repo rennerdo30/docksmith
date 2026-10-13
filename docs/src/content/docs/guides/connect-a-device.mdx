@@ -3,7 +3,7 @@ title: Connect a device
 description: Establish device trust before using Docksmith.
 ---
 
-1. Connect the device to your Mac with a cable.
+1. Connect the device directly to your Mac with a data cable.
 2. Unlock the device and accept its trust prompt if one appears.
 3. Open Docksmith, click **Refresh Devices**, and select the intended device in the sidebar.
 4. Use **Apps** or **Home Screen**. Review the selected apps or layout changes in Docksmith before confirming a device change.
@@ -11,6 +11,22 @@ description: Establish device trust before using Docksmith.
 The app keeps the selected device explicit. If it disconnects, refresh and choose again. The separate CLI uses transient numbers; run `devices` again after reconnecting before probing.
 
 If the picker shows **Configurator unavailable**, macOS detects your device over USB but Apple Configurator cannot access it yet. Select it to see the connection diagnosis, open Apple Configurator, and use **Retry Connection** after the device appears there. USB detection alone does not establish management access. If Xcode is installed and can access the device, **Apps via Xcode** enables the complete app inventory and, when supported, removal of apps explicitly reported as removable. Hidden, internal and indeterminate records remain unselectable. The removal review names its backend and requires confirmation. Home Screen editing still requires Configurator. Without either backend, reads and changes remain disabled. A successful retry loads the selected device automatically. This USB discovery uses macOS APIs and does not require Xcode.
+
+## Complete app inventory
+
+If Configurator returns a partial decoded app list, Docksmith tries the physical Xcode record with the exact same ECID. If the paired Xcode tunnel is idle, a single inventory read is allowed only when Configurator freshly accesses the exact device and macOS freshly detects its matching USB ECID. The Xcode record must become connected before that inventory is used. Offline devices without those live Configurator and USB checks remain unreadable. A successfully decoded complete Xcode inventory replaces that partial list. The Home Screen and removal backend remain Configurator. Protected, hidden, internal and indeterminate Xcode records are excluded from selection even when Configurator performs removal. The warning and Connection diagnostics identify the inventory source separately from the removal backend.
+
+A removal review freezes both the mutation backend and inventory source, including their exact targets. Fresh preflight and final absence checks use that same inventory source. If the source disconnects or returns incomplete inventory, Docksmith stops or reports the previous removal as unverified rather than relying on a partial Configurator list.
+
+## Paired but offline
+
+Xcode can remember a paired physical iPhone or iPad after its connection ends. Docksmith labels these records **Offline** rather than hiding them. Offline records cannot read apps or layouts or perform changes. Connect directly to this Mac using a data cable, unlock the device, accept Trust, then click **Refresh Connection**. **Open Connection Help** shows USB presence, available app and Home Screen backends, pairing status, the last reported transport and last successful discovery refresh. USB presence alone does not establish backend access.
+
+If apps are available through Xcode but Home Screen editing is unavailable, use **Retry Connection** and **Open Apple Configurator**. [Apple's iPhone Mirroring guide](https://support.apple.com/en-us/120421) is an optional manual alternative; Docksmith does not control Mirroring.
+
+## Reviewing batches
+
+Search matches app names and bundle IDs. **All** shows the inventory; **Removable** shows eligible apps. **Select Shown Removable** adds eligible visible apps to your selection. **Clear Selection** clears every selected app, including those hidden by filters. The footer shows the selected count and how many selections are hidden. **Review Selected** freezes every selected app, its name and bundle ID, the device and the backend. Changing filters does not remove items from that review. Device or inventory refresh clears selection. Xcode requires explicitly removable, non-hidden and non-internal records.
 
 ## About Wi-Fi
 

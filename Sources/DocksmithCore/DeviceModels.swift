@@ -3,6 +3,7 @@ import Foundation
 public enum DeviceAvailability: Sendable {
     case ready
     case usbDetectedBackendUnavailable
+    case pairedDisconnected
 }
 
 public enum InventoryBackend: Sendable { case cfgutil, coreDevice, none }
@@ -28,11 +29,14 @@ public struct DeviceInfo: Identifiable, Sendable {
     public let availability: DeviceAvailability
     public let capabilities: DeviceCapabilities
     public let diagnostic: String?
+    public let usbPresent: Bool
+    public let isPaired: Bool?
     let backendIdentifier: String
 
     public init(id: String, displayName: String, model: String?, transport: String,
                 availability: DeviceAvailability = .ready, diagnostic: String? = nil,
-                backendIdentifier: String? = nil, capabilities: DeviceCapabilities? = nil) {
+                backendIdentifier: String? = nil, capabilities: DeviceCapabilities? = nil,
+                usbPresent: Bool = false, isPaired: Bool? = nil) {
         self.id = id
         self.displayName = displayName
         self.model = model
@@ -40,6 +44,8 @@ public struct DeviceInfo: Identifiable, Sendable {
         self.capabilities = capabilities ?? DeviceCapabilities(inventoryBackend: availability == .ready ? .cfgutil : .none)
         self.availability = availability
         self.diagnostic = diagnostic
+        self.usbPresent = usbPresent
+        self.isPaired = isPaired
         self.backendIdentifier = backendIdentifier ?? id
     }
 }
@@ -74,6 +80,14 @@ public struct InventorySnapshot: Sendable {
     public let warning: String?
     public let isPartial: Bool
     public let isDecoded: Bool
+    public let source: InventoryBackend
+    let sourceTarget: String?
+    public init(deviceID: String, apps: [InstalledApp], warning: String?, isPartial: Bool, isDecoded: Bool,
+                source: InventoryBackend = .cfgutil, sourceTarget: String? = nil) {
+        self.deviceID = deviceID; self.apps = apps; self.warning = warning
+        self.isPartial = isPartial; self.isDecoded = isDecoded
+        self.source = source; self.sourceTarget = sourceTarget
+    }
 }
 
 public struct HomeLayout: Equatable, Sendable {
@@ -235,5 +249,20 @@ public struct RemovalPlan: Sendable {
     public let backend: InventoryBackend
     public let ids: [String]
     let target: String
+    public let inventorySource: InventoryBackend
+    let inventoryTarget: String?
     public var backendName: String { backend == .coreDevice ? "Xcode" : "Apple Configurator" }
+}
+
+public enum AppSelection {
+    public static func isEligible(_ app: InstalledApp, backend: InventoryBackend) -> Bool {
+        guard app.isFromInventory, backend != .none else { return false }
+        return backend == .cfgutil || (app.isRemovable == true && app.isHidden == false && app.isInternal == false)
+    }
+    public static func visible(_ apps: [InstalledApp], search: String, removableOnly: Bool, backend: InventoryBackend) -> [InstalledApp] {
+        apps.filter { (!removableOnly || isEligible($0, backend: backend)) && (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search)) }
+    }
+    public static func selectingShown(_ selected: Set<String>, apps: [InstalledApp], backend: InventoryBackend) -> Set<String> {
+        selected.union(apps.filter { isEligible($0, backend: backend) }.map(\.id))
+    }
 }
