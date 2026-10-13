@@ -10,6 +10,7 @@ public enum DeviceServiceError: LocalizedError {
     case staleLayout
     case layoutUnavailable
     case backupFailed
+    case wirelessUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +22,7 @@ public enum DeviceServiceError: LocalizedError {
         case .staleLayout: "The Home Screen changed since it was loaded. Reload before applying."
         case .layoutUnavailable: "The Home Screen layout is unavailable."
         case .backupFailed: "Could not save a private backup before applying the layout."
+        case .wirelessUnavailable: "Xcode could not connect to this paired device. Keep it unlocked on the same network and check Connection help."
         }
     }
 }
@@ -134,6 +136,30 @@ public actor DeviceService {
             let rhs = $1.capabilities.canReadApps ? 0 : ($1.usbPresent ? 1 : 2)
             return lhs == rhs ? $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending : lhs < rhs
         }
+    }
+
+    public func connectPairedDevice(deviceID: String) throws -> DeviceInfo {
+        guard let selected = try discover().first(where: { $0.id == deviceID }) else {
+            throw DeviceServiceError.deviceMissing
+        }
+        if selected.capabilities.canReadApps { return selected }
+        guard selected.availability == .pairedDisconnected, !selected.usbPresent,
+              let ecid = DeviceIdentity.canonicalECID(deviceID), let coreDevice,
+              let target = try coreDevice.discover().first(where: {
+                  $0.isPaired == true && $0.transport == "Network" &&
+                  $0.ecid.flatMap(DeviceIdentity.canonicalECID) == ecid
+              }) else { throw DeviceServiceError.wirelessUnavailable }
+        // Explicit user action activates an existing pairing through one bounded read.
+        let inventory = try coreDevice.loadInventory(identifier: target.identifier, deviceID: deviceID)
+        guard inventory.isDecoded, !inventory.isPartial, inventory.sourceTarget == target.identifier,
+              try coreDevice.discover().contains(where: {
+                  $0.identifier == target.identifier && $0.isConnected &&
+                  $0.ecid.flatMap(DeviceIdentity.canonicalECID) == ecid
+              }),
+              let connected = try discover().first(where: { $0.id == deviceID && $0.capabilities.canReadApps }) else {
+            throw DeviceServiceError.wirelessUnavailable
+        }
+        return connected
     }
 
     public func loadInventory(deviceID: String) throws -> InventorySnapshot {

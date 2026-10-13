@@ -128,6 +128,10 @@ struct WorkspaceView: View {
             } actions: {
                 Button(device.availability == .pairedDisconnected ? "Refresh Connection" : "Retry Connection") { model.requestRefresh() }.disabled(model.selectionLocked)
                 if device.availability == .pairedDisconnected {
+                    if device.isPaired == true && device.transport == "Network" {
+                        Button("Connect Using Xcode") { Task { await model.connectPairedDevice() } }
+                            .disabled(model.selectionLocked)
+                    }
                     Button("Open Connection Help") { model.section = .connection }
                 } else {
                     Button("Open Apple Configurator") { model.openConfigurator() }
@@ -382,6 +386,13 @@ struct ConnectionView: View {
                     }
                 }
                 Button("Refresh Connection") { model.requestRefresh() }.disabled(model.selectionLocked)
+                if let device = model.selectedDevice, device.availability == .pairedDisconnected,
+                   device.isPaired == true, device.transport == "Network" {
+                    Button("Connect Using Xcode") { Task { await model.connectPairedDevice() } }
+                        .disabled(model.selectionLocked)
+                    Text("This tries one app read using the existing pairing. It does not change pairing or remove apps.")
+                        .foregroundStyle(.secondary)
+                }
                 GroupBox("Connect over USB") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("1. Connect your device directly to this Mac with a data cable.")

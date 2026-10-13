@@ -20,7 +20,7 @@ A removal review freezes both the mutation backend and inventory source, includi
 
 ## Paired but offline
 
-Xcode can remember a paired physical iPhone or iPad after its connection ends. Docksmith labels these records **Offline** rather than hiding them. Offline records cannot read apps or layouts or perform changes. Connect directly to this Mac using a data cable, unlock the device, accept Trust, then click **Refresh Connection**. **Open Connection Help** shows USB presence, available app and Home Screen backends, pairing status, the last reported transport and last successful discovery refresh. USB presence alone does not establish backend access.
+Xcode can remember a paired physical iPhone or iPad after its connection ends. Docksmith labels these records **Offline** rather than hiding them. Selecting an offline record does not contact it or perform changes. For an existing network pairing, **Connect Using Xcode** explicitly attempts one bounded app read against the selected device. A complete successful read and a connected device response are required before app access becomes available. This does not create or reset pairing. Alternatively, connect directly to this Mac using a data cable, unlock the device, accept Trust, then click **Refresh Connection**. **Open Connection Help** shows USB presence, available app and Home Screen backends, pairing status and the last reported transport. USB presence alone does not establish backend access.
 
 If apps are available through Xcode but Home Screen editing is unavailable, use **Retry Connection** and **Open Apple Configurator**. [Apple's iPhone Mirroring guide](https://support.apple.com/en-us/120421) is an optional manual alternative; Docksmith does not control Mirroring.
 
@@ -30,4 +30,6 @@ Search matches app names and bundle IDs. **All** shows the inventory; **Removabl
 
 ## About Wi-Fi
 
-Apple's [Finder Wi-Fi sync instructions](https://support.apple.com/en-is/guide/mac-help/mchlada1d602/mac) begin with a cable connection: select the device in Finder, enable **Show this [device] when on Wi-Fi**, and click **Apply**. Docksmith has not verified that `cfgutil` reads work over Wi-Fi. Use a cable for the current documented probe workflow.
+Apple's [Finder Wi-Fi sync instructions](https://support.apple.com/en-is/guide/mac-help/mchlada1d602/mac) begin with a cable connection: select the device in Finder, enable **Show this [device] when on Wi-Fi**, and click **Apply**. Keep the device unlocked on the same network for an app connection attempt. If macOS requests local network access for Docksmith, its permission prompt explains the selected-device connection.
+
+Wireless Xcode app reads have succeeded on a paired test device with USB disconnected. Initial connection attempts can fail; use **Connect Using Xcode** for an explicit retry. Configurator Home Screen access did not recover wirelessly in that test, so use a cable for the verified layout workflow. Wireless removal and layout changes have not been live-tested.

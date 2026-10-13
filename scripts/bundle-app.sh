@@ -31,6 +31,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>Docksmith.icns</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>Docksmith uses the local network to connect to the paired Apple devices you select over Wi-Fi.</string>
 </dict></plist>
 PLIST
 

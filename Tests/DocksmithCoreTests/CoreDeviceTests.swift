@@ -316,6 +316,55 @@ final class CoreDeviceTests: XCTestCase {
         XCTAssertTrue(outcomes.dropFirst().allSatisfy { $0.message.hasPrefix("Not attempted") })
     }
 
+    func testExplicitWirelessConnectionActivatesOnlyTheSelectedExistingPairing() async throws {
+        let runner = CoreRunnerFixture()
+        func devices(state: String) throws -> Data {
+            var root = try JSONSerialization.jsonObject(with: CoreRunnerFixture.devices) as! [String: Any]
+            var result = root["result"] as! [String: Any]
+            var devices = result["devices"] as! [[String: Any]]
+            devices[0]["connectionProperties"] = ["tunnelState": state, "transportType": "localNetwork", "pairingState": "paired"]
+            result["devices"] = devices; root["result"] = result
+            return try JSONSerialization.data(withJSONObject: root)
+        }
+        runner.devicesResult = CommandResult(stdout: try devices(state: "disconnected"))
+        let connected = try devices(state: "connected")
+        runner.onListApps = { runner.devicesResult = CommandResult(stdout: connected) }
+        let cfg = EmptyCfgFixture()
+        let service = DeviceService(runner: cfg, coreDevice: CoreDeviceProvider(runner: runner))
+        let before = try await service.discover()
+        XCTAssertEqual(before.first?.availability, .pairedDisconnected)
+        XCTAssertTrue(runner.appTargets.isEmpty)
+        let after = try await service.connectPairedDevice(deviceID: "42")
+        XCTAssertTrue(after.capabilities.canReadApps)
+        XCTAssertEqual(after.transport, "Network")
+        XCTAssertFalse(after.usbPresent)
+        XCTAssertEqual(runner.appTargets, ["fixture-target"])
+        XCTAssertTrue(runner.uninstallTargets.isEmpty)
+        XCTAssertTrue(cfg.commands.allSatisfy { $0 == ["--format", "JSON", "list"] })
+    }
+
+    func testWirelessConnectionRejectsUnknownPairingWrongDeviceAndIncompleteRead() async throws {
+        for pairing in ["unpaired", "unknown", "paired"] {
+            let runner = CoreRunnerFixture()
+            var root = try JSONSerialization.jsonObject(with: CoreRunnerFixture.devices) as! [String: Any]
+            var result = root["result"] as! [String: Any]
+            var devices = result["devices"] as! [[String: Any]]
+            devices[0]["connectionProperties"] = ["tunnelState": "disconnected", "transportType": "localNetwork", "pairingState": pairing]
+            result["devices"] = devices; root["result"] = result
+            runner.devicesResult = CommandResult(stdout: try JSONSerialization.data(withJSONObject: root))
+            runner.appsResult = CommandResult(stdout: Data(), exitCode: 1)
+            let service = DeviceService(runner: EmptyCfgFixture(), coreDevice: CoreDeviceProvider(runner: runner))
+            do { _ = try await service.connectPairedDevice(deviceID: "43"); XCTFail("Unknown device must not be contacted") }
+            catch DeviceServiceError.deviceMissing { }
+            XCTAssertTrue(runner.appTargets.isEmpty)
+            do { _ = try await service.connectPairedDevice(deviceID: "42"); XCTFail("A complete read is required") }
+            catch DeviceServiceError.deviceMissing { XCTAssertNotEqual(pairing, "paired") }
+            catch DeviceServiceError.wirelessUnavailable { XCTAssertEqual(pairing, "paired") }
+            XCTAssertEqual(runner.appTargets.count, pairing == "paired" ? 1 : 0)
+            XCTAssertTrue(runner.uninstallTargets.isEmpty)
+        }
+    }
+
     func testUncertainUninstallAndIncompleteRefreshNeverClaimVerified() async throws {
         for failedCommand in [true, false] {
             let runner = CoreRunnerFixture()

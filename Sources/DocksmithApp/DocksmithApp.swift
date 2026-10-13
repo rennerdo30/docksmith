@@ -226,6 +226,20 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    func connectPairedDevice() async {
+        guard !selectionLocked, !hasDraftChanges, let selectedDeviceID else { return }
+        busyMessage = "Connecting to paired device…"
+        errorMessage = nil
+        do {
+            _ = try await configuredService().connectPairedDevice(deviceID: selectedDeviceID)
+            busyMessage = nil
+            await refreshDevices()
+        } catch {
+            busyMessage = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func loadSelectedDevice() async {
         guard let selectedDeviceID else { return }
         let token = generation
