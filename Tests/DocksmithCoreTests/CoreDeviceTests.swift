@@ -329,15 +329,24 @@ final class CoreDeviceTests: XCTestCase {
         runner.devicesResult = CommandResult(stdout: try devices(state: "disconnected"))
         let connected = try devices(state: "connected")
         runner.onListApps = { runner.devicesResult = CommandResult(stdout: connected) }
+        // A subsequent read may fail after the connection succeeds. The GUI must
+        // receive the first complete inventory without another device read.
+        runner.inventories = [CommandResult(stdout: CoreRunnerFixture.apps),
+                              CommandResult(stdout: Data(), exitCode: 1)]
         let cfg = EmptyCfgFixture()
         let service = DeviceService(runner: cfg, coreDevice: CoreDeviceProvider(runner: runner))
         let before = try await service.discover()
         XCTAssertEqual(before.first?.availability, .pairedDisconnected)
         XCTAssertTrue(runner.appTargets.isEmpty)
-        let after = try await service.connectPairedDevice(deviceID: "42")
+        let snapshot = try await service.connectPairedDeviceSnapshot(deviceID: "42")
+        let after = snapshot.device
         XCTAssertTrue(after.capabilities.canReadApps)
         XCTAssertEqual(after.transport, "Network")
         XCTAssertFalse(after.usbPresent)
+        XCTAssertTrue(snapshot.inventory.isDecoded)
+        XCTAssertFalse(snapshot.inventory.isPartial)
+        XCTAssertEqual(snapshot.inventory.apps.count, 2)
+        XCTAssertNil(snapshot.layout.layout)
         XCTAssertEqual(runner.appTargets, ["fixture-target"])
         XCTAssertTrue(runner.uninstallTargets.isEmpty)
         XCTAssertTrue(cfg.commands.allSatisfy { $0 == ["--format", "JSON", "list"] })

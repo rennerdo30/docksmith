@@ -231,9 +231,18 @@ final class WorkspaceModel: ObservableObject {
         busyMessage = "Connecting to paired device…"
         errorMessage = nil
         do {
-            _ = try await configuredService().connectPairedDevice(deviceID: selectedDeviceID)
+            let snapshot = try await configuredService().connectPairedDeviceSnapshot(deviceID: selectedDeviceID)
+            guard self.selectedDeviceID == selectedDeviceID else { busyMessage = nil; return }
+            devices = devices.map { $0.id == selectedDeviceID ? snapshot.device : $0 }
+            inventory = snapshot.inventory
+            baseline = snapshot.layout
+            draft = snapshot.layout.layout
+            selectedApps = []
+            removalPlan = nil
+            iconCache = Dictionary(uniqueKeysWithValues: snapshot.inventory.apps.compactMap { app in
+                app.iconData.map { (app.id, $0) }
+            })
             busyMessage = nil
-            await refreshDevices()
         } catch {
             busyMessage = nil
             errorMessage = error.localizedDescription

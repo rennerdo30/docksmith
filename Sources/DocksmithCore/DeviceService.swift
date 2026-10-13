@@ -139,10 +139,20 @@ public actor DeviceService {
     }
 
     public func connectPairedDevice(deviceID: String) throws -> DeviceInfo {
+        try connectPairedDeviceSnapshot(deviceID: deviceID).device
+    }
+
+    public func connectPairedDeviceSnapshot(deviceID: String) throws -> DeviceSnapshot {
         guard let selected = try discover().first(where: { $0.id == deviceID }) else {
             throw DeviceServiceError.deviceMissing
         }
-        if selected.capabilities.canReadApps { return selected }
+        if selected.capabilities.canReadApps {
+            let snapshot = try loadSnapshot(deviceID: deviceID)
+            guard snapshot.inventory.isDecoded, !snapshot.inventory.isPartial else {
+                throw DeviceServiceError.wirelessUnavailable
+            }
+            return snapshot
+        }
         guard selected.availability == .pairedDisconnected, !selected.usbPresent,
               let ecid = DeviceIdentity.canonicalECID(deviceID), let coreDevice,
               let target = try coreDevice.discover().first(where: {
@@ -159,7 +169,9 @@ public actor DeviceService {
               let connected = try discover().first(where: { $0.id == deviceID && $0.capabilities.canReadApps }) else {
             throw DeviceServiceError.wirelessUnavailable
         }
-        return connected
+        let layout = LayoutSnapshot(deviceID: deviceID, capturedAt: Date(), rawJSON: Data(), layout: nil,
+                                    warning: "Home Screen editing requires Apple Configurator access.", isPartial: true)
+        return DeviceSnapshot(device: connected, inventory: inventory, layout: layout)
     }
 
     public func loadInventory(deviceID: String) throws -> InventorySnapshot {
