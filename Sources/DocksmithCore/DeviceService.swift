@@ -13,7 +13,7 @@ public enum DeviceServiceError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .backendUnavailable: "This device is connected over USB, but Apple Configurator cannot currently access it. Retry the connection after reopening Configurator."
+        case .backendUnavailable: "The selected device backend cannot currently perform this operation. Refresh Connection and check the available backend."
         case .deviceMissing: "The selected device is no longer connected."
         case .inventoryUnavailable: "The app inventory is unavailable."
         case .invalidSelection: "Select installed, removable apps before deleting."
@@ -70,7 +70,7 @@ public actor DeviceService {
                 } else { isUSB = false }
                 return DeviceInfo(id: DeviceIdentity.canonicalECID(backendID) ?? backendID,
                                   displayName: name ?? model ?? "Apple device", model: model,
-                                  transport: isUSB ? "USB" : "Unknown", backendIdentifier: backendID)
+                                  transport: isUSB ? "USB" : "Unknown", backendIdentifier: backendID, usbPresent: isUSB)
             }
         } catch { backendFailure = error }
         for device in ready { rememberedNames[device.id] = device.displayName }
@@ -80,12 +80,12 @@ public actor DeviceService {
             if let existing = merged[identity] {
                 merged[identity] = DeviceInfo(id: existing.id, displayName: existing.displayName,
                                              model: existing.model, transport: "USB",
-                                             backendIdentifier: existing.backendIdentifier)
+                                             backendIdentifier: existing.backendIdentifier, usbPresent: true)
             } else {
                 merged[identity] = DeviceInfo(id: identity, displayName: rememberedNames[identity] ?? "\(device.productName) (USB)",
                                              model: device.productName, transport: "USB",
                                              availability: .usbDetectedBackendUnavailable,
-                                             diagnostic: "Your \(device.productName) is connected to this Mac, but Apple Configurator cannot currently access it.")
+                                             diagnostic: "Your \(device.productName) is connected to this Mac, but Apple Configurator cannot currently access it.", usbPresent: true)
             }
         }
         if let coreDevice, let discovered = try? coreDevice.discover() {
@@ -96,23 +96,44 @@ public actor DeviceService {
                 let exactUSB = usbDevices.first { usb in
                     guard usb.isSupportedMobileDevice else { return false }
                     if let ecid, usb.ecid.flatMap(DeviceIdentity.canonicalECID) == ecid { return true }
-                    return udid != nil && usb.udid.flatMap(DeviceIdentity.canonicalUDID) == udid
+                    return device.isConnected && udid != nil && usb.udid.flatMap(DeviceIdentity.canonicalUDID) == udid
                 }
-                let identity = exactUSB.map {
-                    $0.ecid.flatMap(DeviceIdentity.canonicalECID) ?? "usb-registry:\($0.registryID)"
-                } ?? ecid ?? "coredevice:\(device.identifier)"
-                if merged[identity]?.capabilities.inventoryBackend == .cfgutil { continue }
-                merged[identity] = DeviceInfo(id: identity, displayName: device.name, model: device.model,
-                                             transport: exactUSB == nil ? device.transport : "USB",
-                                             availability: .usbDetectedBackendUnavailable,
-                                             diagnostic: canRemove ? "Apps loaded using Xcode. Supported removable apps can be removed using Xcode; Home Screen editing requires Apple Configurator access." : "Apps loaded using Xcode. App removal and Home Screen editing require Apple Configurator access.",
-                                             backendIdentifier: device.identifier,
-                                             capabilities: DeviceCapabilities(inventoryBackend: .coreDevice, canRemoveApps: canRemove))
+                let identity = exactUSB.map { $0.ecid.flatMap(DeviceIdentity.canonicalECID) ?? "usb-registry:\($0.registryID)" } ?? ecid ?? "coredevice:\(device.identifier)"
+                if let existing = merged[identity], existing.capabilities.inventoryBackend == .cfgutil {
+                    merged[identity] = DeviceInfo(id: existing.id, displayName: existing.displayName, model: existing.model,
+                        transport: existing.transport, availability: existing.availability, diagnostic: existing.diagnostic,
+                        backendIdentifier: existing.backendIdentifier, capabilities: existing.capabilities,
+                        usbPresent: existing.usbPresent, isPaired: device.isPaired)
+                    continue
+                }
+                if !device.isConnected {
+                    if let existing = merged[identity] {
+                        merged[identity] = DeviceInfo(id: identity, displayName: device.name, model: existing.model,
+                            transport: device.transport, availability: existing.availability, diagnostic: existing.diagnostic,
+                            capabilities: existing.capabilities, usbPresent: existing.usbPresent, isPaired: device.isPaired)
+                    } else {
+                        merged[identity] = DeviceInfo(id: identity, displayName: device.name, model: device.model,
+                            transport: device.transport, availability: .pairedDisconnected,
+                            diagnostic: "Paired device is offline. Connect directly to this Mac with a data cable, unlock the device and accept Trust, then refresh Connection.",
+                            capabilities: DeviceCapabilities(inventoryBackend: .none), isPaired: true)
+                    }
+                } else {
+                    merged[identity] = DeviceInfo(id: identity, displayName: device.name, model: device.model,
+                        transport: device.transport, availability: .ready,
+                        diagnostic: canRemove ? "Apps loaded using Xcode. Supported removable apps can be removed using Xcode; Home Screen editing requires Apple Configurator access." : "Apps loaded using Xcode. App removal and Home Screen editing require Apple Configurator access.",
+                        backendIdentifier: device.identifier,
+                        capabilities: DeviceCapabilities(inventoryBackend: .coreDevice, canRemoveApps: canRemove),
+                        usbPresent: exactUSB != nil, isPaired: device.isPaired)
+                }
                 rememberedNames[identity] = device.name
             }
         }
         if merged.isEmpty, let backendFailure { throw backendFailure }
-        return merged.values.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        return merged.values.sorted {
+            let lhs = $0.capabilities.canReadApps ? 0 : ($0.usbPresent ? 1 : 2)
+            let rhs = $1.capabilities.canReadApps ? 0 : ($1.usbPresent ? 1 : 2)
+            return lhs == rhs ? $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending : lhs < rhs
+        }
     }
 
     public func loadInventory(deviceID: String) throws -> InventorySnapshot {
@@ -143,9 +164,70 @@ public actor DeviceService {
             let version = raw["bundleVersion"] as? String
             apps.append(InstalledApp(id: id, name: name, version: version))
         }
-        return InventorySnapshot(deviceID: deviceID, apps: apps.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
+        let cfgInventory = InventorySnapshot(deviceID: deviceID, apps: apps.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
                                  warning: result.exitCode == 0 ? nil : "cfgutil returned a nonzero status; inventory may be partial.",
                                  isPartial: result.exitCode != 0, isDecoded: true)
+        if cfgInventory.isPartial, let counterpart = try? coreInventoryReadTarget(deviceID: deviceID, mutatorTarget: target),
+           let complete = try? coreDevice?.loadInventory(identifier: counterpart.identifier, deviceID: deviceID),
+           complete.isDecoded, !complete.isPartial,
+           (try? connectedCoreDevice(deviceID: deviceID, target: counterpart.identifier)) != nil {
+            return InventorySnapshot(deviceID: deviceID, apps: complete.apps,
+                warning: "Complete app list read using Xcode; Home Screen and removals use Configurator.",
+                isPartial: false, isDecoded: true, source: .coreDevice, sourceTarget: counterpart.identifier)
+        }
+        return cfgInventory
+    }
+
+    private func connectedCoreDevice(deviceID: String, target: String? = nil) throws -> CoreDeviceInfo {
+        guard let ecid = DeviceIdentity.canonicalECID(deviceID), let coreDevice,
+              let counterpart = try coreDevice.discover().first(where: {
+                  $0.isConnected && $0.ecid.flatMap(DeviceIdentity.canonicalECID) == ecid && (target == nil || $0.identifier == target)
+              }) else { throw DeviceServiceError.inventoryUnavailable }
+        return counterpart
+    }
+
+    private func coreInventoryReadTarget(deviceID: String, mutatorTarget: String, expectedTarget: String? = nil) throws -> CoreDeviceInfo {
+        if let connected = try? connectedCoreDevice(deviceID: deviceID, target: expectedTarget) { return connected }
+        let mutator = try requireDevice(deviceID)
+        guard mutator.capabilities.inventoryBackend == .cfgutil, mutator.backendIdentifier == mutatorTarget,
+              let ecid = DeviceIdentity.canonicalECID(deviceID),
+              try hardware.connectedDevices().contains(where: { $0.isSupportedMobileDevice && $0.ecid.flatMap(DeviceIdentity.canonicalECID) == ecid }),
+              let coreDevice,
+              let idle = try coreDevice.discover().first(where: {
+                  $0.connectionState == "disconnected" && $0.isPaired == true &&
+                  $0.ecid.flatMap(DeviceIdentity.canonicalECID) == ecid &&
+                  (expectedTarget == nil || $0.identifier == expectedTarget)
+              }) else { throw DeviceServiceError.inventoryUnavailable }
+        return idle
+    }
+
+    private func requirePinnedInventorySource(_ plan: RemovalPlan, target: String) throws -> CoreDeviceInfo {
+        if plan.backend == .coreDevice {
+            guard target == plan.target, let coreDevice,
+                  let device = try coreDevice.discover().first(where: { $0.identifier == target && $0.isConnected }) else {
+                throw DeviceServiceError.inventoryUnavailable
+            }
+            return device
+        }
+        return try connectedCoreDevice(deviceID: plan.deviceID, target: target)
+    }
+
+    private func loadPinnedInventory(_ plan: RemovalPlan) throws -> InventorySnapshot {
+        if plan.inventorySource == .coreDevice {
+            guard let target = plan.inventoryTarget, let coreDevice else { throw DeviceServiceError.inventoryUnavailable }
+            if plan.backend == .cfgutil {
+                _ = try coreInventoryReadTarget(deviceID: plan.deviceID, mutatorTarget: plan.target, expectedTarget: target)
+            } else {
+                _ = try requirePinnedInventorySource(plan, target: target)
+            }
+            let inventory = try coreDevice.loadInventory(identifier: target, deviceID: plan.deviceID)
+            guard inventory.isDecoded, !inventory.isPartial else { throw DeviceServiceError.inventoryUnavailable }
+            _ = try requirePinnedInventorySource(plan, target: target)
+            return inventory
+        }
+        let inventory = try loadInventory(deviceID: plan.deviceID)
+        guard inventory.source == plan.inventorySource else { throw DeviceServiceError.inventoryUnavailable }
+        return inventory
     }
 
     public func loadLayout(deviceID: String) throws -> LayoutSnapshot {
@@ -188,7 +270,7 @@ public actor DeviceService {
         merged.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         let allApps = InventorySnapshot(deviceID: deviceID, apps: merged,
                                         warning: inventory.warning, isPartial: inventory.isPartial,
-                                        isDecoded: inventory.isDecoded)
+                                        isDecoded: inventory.isDecoded, source: inventory.source, sourceTarget: inventory.sourceTarget)
         return DeviceSnapshot(device: device, inventory: allApps, layout: layout)
     }
 
@@ -218,7 +300,10 @@ public actor DeviceService {
         guard !unique.isEmpty, unique.allSatisfy(Self.validBundleID) else {
             throw DeviceServiceError.invalidSelection
         }
-        return RemovalPlan(deviceID: deviceID, backend: device.capabilities.inventoryBackend, ids: unique, target: device.backendIdentifier)
+        let inventory = try loadInventory(deviceID: deviceID)
+        guard inventory.isDecoded, inventory.source != .coreDevice || !inventory.isPartial else { throw DeviceServiceError.inventoryUnavailable }
+        return RemovalPlan(deviceID: deviceID, backend: device.capabilities.inventoryBackend, ids: unique,
+                           target: device.backendIdentifier, inventorySource: inventory.source, inventoryTarget: inventory.sourceTarget)
     }
 
     public func removeApps(deviceID: String, ids: [String]) throws -> [RemovalResult] {
@@ -226,8 +311,8 @@ public actor DeviceService {
     }
 
     public func executeRemoval(_ plan: RemovalPlan) throws -> [RemovalResult] {
-        _ = try requirePinnedDevice(plan)
-        let inventory = try loadInventory(deviceID: plan.deviceID)
+        _ = try requirePinnedDevice(plan, validateSource: false)
+        let inventory = try loadPinnedInventory(plan)
         guard inventory.isDecoded, plan.backend != .coreDevice || !inventory.isPartial else { throw DeviceServiceError.inventoryUnavailable }
         _ = try requirePinnedDevice(plan)
         let installed = Dictionary(inventory.apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -242,7 +327,7 @@ public actor DeviceService {
                 outcomes.append(RemovalResult(id: id, success: false, message: "App is not present in the fresh installed-app inventory."))
                 continue
             }
-            if plan.backend == .coreDevice && (app.isRemovable != true || app.isHidden != false || app.isInternal != false) {
+            if plan.inventorySource == .coreDevice && !AppSelection.isEligible(app, backend: plan.inventorySource) {
                 outcomes.append(RemovalResult(id: id, success: false, message: "Xcode did not report this app as a supported removable app."))
                 continue
             }
@@ -268,8 +353,8 @@ public actor DeviceService {
         }
         var refreshed: InventorySnapshot?
         do {
-            _ = try requirePinnedDevice(plan)
-            refreshed = try loadInventory(deviceID: plan.deviceID)
+            _ = try requirePinnedDevice(plan, validateSource: false)
+            refreshed = try loadPinnedInventory(plan)
             _ = try requirePinnedDevice(plan)
         } catch { refreshed = nil }
         let remaining = Set(refreshed?.apps.map(\.id) ?? [])
@@ -281,10 +366,14 @@ public actor DeviceService {
         }
     }
 
-    private func requirePinnedDevice(_ plan: RemovalPlan) throws -> DeviceInfo {
+    private func requirePinnedDevice(_ plan: RemovalPlan, validateSource: Bool = true) throws -> DeviceInfo {
         let device = try requireDevice(plan.deviceID, allowReadOnlyApps: true)
         guard device.capabilities.canRemoveApps, device.capabilities.inventoryBackend == plan.backend,
               device.backendIdentifier == plan.target else { throw DeviceServiceError.backendUnavailable }
+        if validateSource && plan.inventorySource == .coreDevice {
+            guard let target = plan.inventoryTarget else { throw DeviceServiceError.inventoryUnavailable }
+            _ = try requirePinnedInventorySource(plan, target: target)
+        }
         return device
     }
 

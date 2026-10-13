@@ -18,6 +18,191 @@ final class CoreDeviceTests: XCTestCase {
         XCTAssertEqual(runner.appTargets, ["fixture-target"])
     }
 
+    func testModernPairedOfflineGatesAndNoReadsOrWrites() async throws {
+        let runner = CoreRunnerFixture()
+        runner.supportsRemoval = true
+        let records: [[String: Any]] = [
+            ["identifier": "offline", "properties": ["hardware": ["ecid": 42, "deviceType": "iPhone", "reality": "physical"], "state": ["name": "Remembered phone"], "connection": ["state": "disconnected", "pairingState": "paired", "transportType": "localNetwork"]]],
+            ["identifier": "unknown", "properties": ["hardware": ["ecid": 43, "deviceType": "iPhone", "reality": "physical"], "connection": ["state": "unknown", "pairingState": "paired"]]],
+            ["identifier": "unpaired", "properties": ["hardware": ["ecid": 44, "deviceType": "iPad", "reality": "physical"], "connection": ["state": "disconnected", "pairingState": "unpaired"]]],
+            ["identifier": "sim", "properties": ["hardware": ["ecid": 45, "deviceType": "iPhone", "reality": "simulated"], "connection": ["state": "disconnected", "pairingState": "paired"]]],
+            ["identifier": "tv", "properties": ["hardware": ["ecid": 46, "deviceType": "AppleTV", "reality": "physical"], "connection": ["state": "disconnected", "pairingState": "paired"]]],
+            ["identifier": "bad", "properties": ["hardware": ["ecid": "invalid", "deviceType": "iPhone", "reality": "physical"], "connection": ["state": "disconnected", "pairingState": "paired"]]]
+        ]
+        runner.devicesResult = CommandResult(stdout: try JSONSerialization.data(withJSONObject: ["info": ["outcome": "success"], "result": ["devices": records]]))
+        let cfg = EmptyCfgFixture()
+        let service = DeviceService(runner: cfg, coreDevice: CoreDeviceProvider(runner: runner))
+        let found = try await service.discover()
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found[0].availability, .pairedDisconnected)
+        XCTAssertEqual(found[0].transport, "Network")
+        XCTAssertFalse(found[0].usbPresent)
+        XCTAssertFalse(found[0].capabilities.canReadApps)
+        XCTAssertFalse(found[0].capabilities.canRemoveApps)
+        XCTAssertFalse(found[0].capabilities.canReadLayout)
+        do { _ = try await service.loadInventory(deviceID: "42"); XCTFail("Offline inventory must fail") }
+        catch DeviceServiceError.backendUnavailable { }
+        do { _ = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.one"]); XCTFail("Offline removal must fail") }
+        catch DeviceServiceError.backendUnavailable { }
+        XCTAssertTrue(runner.appTargets.isEmpty)
+        XCTAssertTrue(runner.uninstallTargets.isEmpty)
+        let usb = CoreHardwareFixture(devices: [USBDevicePresence(registryID: 1, productName: "iPhone", vendorID: 1452, ecid: "42")])
+        let withUSB = try await DeviceService(runner: cfg, hardware: usb, coreDevice: CoreDeviceProvider(runner: runner)).discover()
+        XCTAssertEqual(withUSB[0].availability, .usbDetectedBackendUnavailable)
+        XCTAssertEqual(withUSB[0].displayName, "Remembered phone")
+        XCTAssertTrue(withUSB[0].usbPresent)
+        XCTAssertFalse(withUSB[0].capabilities.canReadApps)
+        cfg.discovery = Data(#"{"Output":{"test":{"ECID":"42","name":"Live phone"}}}"#.utf8)
+        let live = try await service.discover()
+        XCTAssertEqual(live[0].capabilities.inventoryBackend, .cfgutil)
+    }
+
+    func testReportedNetworkPreservedWithUSBAndDisconnectInvalidatesReview() async throws {
+        let runner = CoreRunnerFixture()
+        runner.supportsRemoval = true
+        runner.devicesResult = CommandResult(stdout: Data(String(decoding: CoreRunnerFixture.devices, as: UTF8.self).replacingOccurrences(of: "wired", with: "localNetwork").utf8))
+        let usb = CoreHardwareFixture(devices: [USBDevicePresence(registryID: 1, productName: "iPhone", vendorID: 1452, ecid: "42")])
+        let service = DeviceService(runner: EmptyCfgFixture(), hardware: usb, coreDevice: CoreDeviceProvider(runner: runner))
+        let found = try await service.discover()
+        XCTAssertEqual(found[0].transport, "Network")
+        XCTAssertTrue(found[0].usbPresent)
+        let plan = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.one"])
+        runner.appTargets = []
+        runner.devicesResult = CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"devices":[{"identifier":"fixture-target","hardwareProperties":{"ecid":42,"deviceType":"iPhone","reality":"physical"},"connectionProperties":{"tunnelState":"disconnected","pairingState":"paired"}}]}}"#.utf8))
+        do { _ = try await service.executeRemoval(plan); XCTFail("Disconnect must invalidate review") }
+        catch DeviceServiceError.backendUnavailable { }
+        XCTAssertTrue(runner.appTargets.isEmpty)
+        XCTAssertTrue(runner.uninstallTargets.isEmpty)
+    }
+
+    func testCoreOnlyRemovalPlanSupportsExactNonECIDIdentity() async throws {
+        for usbMatch in [true, false] {
+            let runner = CoreRunnerFixture()
+            runner.supportsRemoval = true
+            runner.devicesResult = CommandResult(stdout: Data(String(decoding: CoreRunnerFixture.devices, as: UTF8.self).replacingOccurrences(of: "\"ecid\":42,", with: "").utf8))
+            let hardware = CoreHardwareFixture(devices: usbMatch ? [USBDevicePresence(registryID: 9, productName: "iPhone", vendorID: 1452, ecid: nil, udid: "00000001-0000000000000002")] : [])
+            let service = DeviceService(runner: EmptyCfgFixture(), hardware: hardware, coreDevice: CoreDeviceProvider(runner: runner))
+            let id = usbMatch ? "usb-registry:9" : "coredevice:fixture-target"
+            let plan = try await service.prepareRemoval(deviceID: id, ids: ["com.example.one"])
+            runner.inventories = [CommandResult(stdout: CoreRunnerFixture.apps), CommandResult(stdout: CoreRunnerFixture.emptyApps)]
+            let outcomes = try await service.executeRemoval(plan)
+            XCTAssertTrue(outcomes[0].success)
+            XCTAssertEqual(runner.uninstallTargets.count, 1)
+            XCTAssertEqual(runner.uninstallTargets[0].0, "fixture-target")
+        }
+    }
+
+    func testIdlePairedCoreInventoryActivatesOnlyWithLiveCfgAndMatchingUSB() async throws {
+        for hasUSB in [true, false] {
+            let cfg = PartialCfgFixture()
+            let core = CoreRunnerFixture()
+            core.devicesResult = CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"devices":[{"identifier":"fixture-target","hardwareProperties":{"ecid":42,"deviceType":"iPhone","reality":"physical"},"connectionProperties":{"tunnelState":"disconnected","pairingState":"paired"}}]}}"#.utf8))
+            core.onListApps = { core.devicesResult = CommandResult(stdout: CoreRunnerFixture.devices) }
+            let hardware = CoreHardwareFixture(devices: hasUSB ? [USBDevicePresence(registryID: 1, productName: "iPhone", vendorID: 1452, ecid: "42")] : [])
+            let service = DeviceService(runner: cfg, hardware: hardware, coreDevice: CoreDeviceProvider(runner: core))
+            let inventory = try await service.loadInventory(deviceID: "42")
+            XCTAssertEqual(inventory.source, hasUSB ? .coreDevice : .cfgutil)
+            XCTAssertEqual(core.appTargets.count, hasUSB ? 1 : 0)
+            if hasUSB {
+                let plan = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.one"])
+                core.devicesResult = CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"devices":[{"identifier":"fixture-target","hardwareProperties":{"ecid":42,"deviceType":"iPhone","reality":"physical"},"connectionProperties":{"tunnelState":"disconnected","pairingState":"paired"}}]}}"#.utf8))
+                core.inventories = [CommandResult(stdout: CoreRunnerFixture.apps), CommandResult(stdout: CoreRunnerFixture.emptyApps)]
+                let outcomes = try await service.executeRemoval(plan)
+                XCTAssertTrue(outcomes[0].success)
+                XCTAssertEqual(cfg.writeCommands.count, 1)
+            }
+        }
+        let core = CoreRunnerFixture()
+        core.devicesResult = CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"devices":[{"identifier":"fixture-target","hardwareProperties":{"ecid":42,"deviceType":"iPhone","reality":"physical"},"connectionProperties":{"tunnelState":"disconnected","pairingState":"paired"}}]}}"#.utf8))
+        let hardware = CoreHardwareFixture(devices: [USBDevicePresence(registryID: 1, productName: "iPhone", vendorID: 1452, ecid: "42")])
+        let unavailable = DeviceService(runner: EmptyCfgFixture(), hardware: hardware, coreDevice: CoreDeviceProvider(runner: core))
+        do { _ = try await unavailable.loadInventory(deviceID: "42"); XCTFail("Idle Core cannot activate without Configurator") }
+        catch DeviceServiceError.backendUnavailable { }
+        XCTAssertTrue(core.appTargets.isEmpty)
+        core.onListApps = { core.devicesResult = CommandResult(stdout: CoreRunnerFixture.devices) }
+        core.appsResult = CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"apps":[]}}"#.utf8))
+        let incomplete = try await DeviceService(runner: PartialCfgFixture(), hardware: hardware, coreDevice: CoreDeviceProvider(runner: core)).loadInventory(deviceID: "42")
+        XCTAssertEqual(incomplete.source, .cfgutil)
+        XCTAssertTrue(incomplete.isPartial)
+    }
+
+    func testPartialCfgInventoryUsesCompleteExactCoreSourceWithCfgLayoutAndMutator() async throws {
+        let cfg = PartialCfgFixture()
+        let core = CoreRunnerFixture()
+        let service = DeviceService(runner: cfg, coreDevice: CoreDeviceProvider(runner: core))
+        let inventory = try await service.loadInventory(deviceID: "42")
+        XCTAssertEqual(inventory.source, .coreDevice)
+        XCTAssertEqual(inventory.apps.count, 2)
+        XCTAssertFalse(inventory.isPartial)
+        XCTAssertFalse(AppSelection.isEligible(inventory.apps.first { $0.id == "com.example.system" }!, backend: inventory.source))
+        let plan = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.system"])
+        XCTAssertEqual(plan.backend, .cfgutil)
+        XCTAssertEqual(plan.inventorySource, .coreDevice)
+        let outcomes = try await service.executeRemoval(plan)
+        XCTAssertFalse(outcomes[0].success)
+        XCTAssertTrue(cfg.writeCommands.isEmpty)
+        XCTAssertTrue(core.uninstallTargets.isEmpty)
+        core.devicesResult = CommandResult(stdout: Data(String(decoding: CoreRunnerFixture.devices, as: UTF8.self).replacingOccurrences(of: "\"ecid\":42", with: "\"ecid\":43").utf8))
+        let wrong = try await service.loadInventory(deviceID: "42")
+        XCTAssertEqual(wrong.source, .cfgutil)
+        XCTAssertTrue(wrong.isPartial)
+        XCTAssertEqual(wrong.apps.count, 1)
+    }
+
+    func testPinnedEnrichmentCannotFallbackToPartialCfgInventory() async throws {
+        for lostConnection in [true, false] {
+            let cfg = PartialCfgFixture()
+            let core = CoreRunnerFixture()
+            let service = DeviceService(runner: cfg, coreDevice: CoreDeviceProvider(runner: core))
+            let plan = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.one"])
+            if lostConnection { core.devicesResult = CommandResult(stdout: Data(), exitCode: 1) }
+            else { core.appsResult = CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"apps":[]}}"#.utf8)) }
+            do { _ = try await service.executeRemoval(plan); XCTFail("Pinned source must remain complete and connected") }
+            catch DeviceServiceError.inventoryUnavailable { }
+            XCTAssertTrue(cfg.writeCommands.isEmpty)
+        }
+        let cfg = PartialCfgFixture()
+        let core = CoreRunnerFixture()
+        let service = DeviceService(runner: cfg, coreDevice: CoreDeviceProvider(runner: core))
+        let plan = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.one"])
+        cfg.onWrite = { core.appsResult = CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"apps":[]}}"#.utf8)) }
+        let outcome = try await service.executeRemoval(plan)
+        XCTAssertEqual(cfg.writeCommands.count, 1)
+        XCTAssertFalse(outcome[0].success)
+        XCTAssertEqual(outcome[0].message, "Removal could not be verified from a fresh inventory.")
+    }
+
+    func testLosingEnrichmentSourceMidBatchStopsRemainingAndLeavesSuccessUnverified() async throws {
+        let cfg = PartialCfgFixture()
+        let core = CoreRunnerFixture()
+        core.appsResult = CommandResult(stdout: Data(String(decoding: CoreRunnerFixture.apps, as: UTF8.self)
+            .replacingOccurrences(of: "\"removable\":false", with: "\"removable\":true")
+            .replacingOccurrences(of: "\"hidden\":true", with: "\"hidden\":false")
+            .replacingOccurrences(of: "\"internalApp\":true", with: "\"internalApp\":false").utf8))
+        let service = DeviceService(runner: cfg, coreDevice: CoreDeviceProvider(runner: core))
+        let plan = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.one", "com.example.system"])
+        cfg.onWrite = { core.devicesResult = CommandResult(stdout: Data(), exitCode: 1) }
+        let outcomes = try await service.executeRemoval(plan)
+        XCTAssertEqual(cfg.writeCommands.count, 1)
+        XCTAssertFalse(outcomes[0].success)
+        XCTAssertEqual(outcomes[0].message, "Removal could not be verified from a fresh inventory.")
+        XCTAssertFalse(outcomes[1].success)
+        XCTAssertTrue(outcomes[1].message.hasPrefix("Not attempted"))
+    }
+
+    func testBatchSelectionKeepsHiddenIDsAndStrictEligibility() {
+        let apps = [InstalledApp(id: "com.example.a", name: "Same", isRemovable: true, isHidden: false, isInternal: false),
+                    InstalledApp(id: "com.example.b", name: "Same", isRemovable: true, isHidden: false, isInternal: false),
+                    InstalledApp(id: "com.example.hidden", name: "Hidden", isRemovable: true, isHidden: true, isInternal: false),
+                    InstalledApp(id: "com.example.unknown", name: "Unknown", isRemovable: true)]
+        let shown = AppSelection.visible(apps, search: "example.b", removableOnly: true, backend: .coreDevice)
+        XCTAssertEqual(shown.map(\.id), ["com.example.b"])
+        let selected = AppSelection.selectingShown(["com.example.a"], apps: shown, backend: .coreDevice)
+        XCTAssertEqual(selected, ["com.example.a", "com.example.b"])
+        XCTAssertEqual(AppSelection.selectingShown([], apps: apps, backend: .coreDevice), selected)
+        XCTAssertEqual(selected.subtracting(shown.map(\.id)), ["com.example.a"])
+    }
+
     func testFailedOrMalformedInventoryNeverClaimsZeroInstalledApps() throws {
         for command in [CommandResult(stdout: Data(), exitCode: 1),
                         CommandResult(stdout: CoreRunnerFixture.apps, timedOut: true),
@@ -90,7 +275,7 @@ final class CoreDeviceTests: XCTestCase {
     func testFrozenCoreDeviceRemovalUsesExactTargetAndVerifiesCompleteAbsence() async throws {
         let runner = CoreRunnerFixture()
         runner.supportsRemoval = true
-        runner.inventories = [CommandResult(stdout: CoreRunnerFixture.apps), CommandResult(stdout: CoreRunnerFixture.emptyApps)]
+        runner.inventories = [CommandResult(stdout: CoreRunnerFixture.apps), CommandResult(stdout: CoreRunnerFixture.apps), CommandResult(stdout: CoreRunnerFixture.emptyApps)]
         let service = DeviceService(runner: EmptyCfgFixture(), coreDevice: CoreDeviceProvider(runner: runner))
         let plan = try await service.prepareRemoval(deviceID: "42", ids: ["com.example.one"])
         XCTAssertEqual(plan.backendName, "Xcode")
@@ -135,7 +320,7 @@ final class CoreDeviceTests: XCTestCase {
         for failedCommand in [true, false] {
             let runner = CoreRunnerFixture()
             runner.supportsRemoval = true
-            runner.inventories = [CommandResult(stdout: CoreRunnerFixture.apps),
+            runner.inventories = [CommandResult(stdout: CoreRunnerFixture.apps), CommandResult(stdout: CoreRunnerFixture.apps),
                                   failedCommand ? CommandResult(stdout: CoreRunnerFixture.emptyApps) : CommandResult(stdout: Data(#"{"info":{"outcome":"success"},"result":{"apps":[]}}"#.utf8))]
             if failedCommand { runner.uninstallResult = CommandResult(stdout: Data(), timedOut: true) }
             let result = try await DeviceService(runner: EmptyCfgFixture(), coreDevice: CoreDeviceProvider(runner: runner)).removeApps(deviceID: "42", ids: ["com.example.one"])
@@ -174,6 +359,7 @@ private final class CoreRunnerFixture: CoreDeviceRunning, @unchecked Sendable {
     var uninstallTargets: [(String, String)] = []
     var inventories: [CommandResult] = []
     var onUninstall: (() -> Void)?
+    var onListApps: (() -> Void)?
     func supportsAppRemoval() throws -> Bool { supportsRemoval }
     func uninstallApp(identifier: String, bundleID: String) throws -> CommandResult {
         uninstallTargets.append((identifier, bundleID))
@@ -183,6 +369,20 @@ private final class CoreRunnerFixture: CoreDeviceRunning, @unchecked Sendable {
     func listDevices() throws -> CommandResult { devicesResult }
     func listApps(identifier: String) throws -> CommandResult {
         appTargets.append(identifier)
+        onListApps?()
         return inventories.isEmpty ? appsResult : inventories.removeFirst()
+    }
+}
+
+private final class PartialCfgFixture: CfgutilRunning, @unchecked Sendable {
+    var writeCommands: [[String]] = []
+    var onWrite: (() -> Void)?
+    func run(_ arguments: [String]) throws -> CommandResult {
+        if arguments.last == "list" { return CommandResult(stdout: Data(#"{"Output":{"test":{"ECID":"42","name":"Live fixture"}}}"#.utf8)) }
+        if arguments.contains("remove-app") {
+            writeCommands.append(arguments); onWrite?()
+            return CommandResult(stdout: Data(#"{"Output":{"42":{}}}"#.utf8))
+        }
+        return CommandResult(stdout: Data(#"{"Output":{"42":{"installedApps":[{"bundleIdentifier":"com.example.one","displayName":"One"}]}}}"#.utf8), exitCode: 1)
     }
 }

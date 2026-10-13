@@ -17,14 +17,14 @@ struct WorkspaceView: View {
                 )) {
                     Text("Choose a device").tag(String?.none)
                     ForEach(model.devices) { device in
-                        Text(device.displayName + (device.capabilities.inventoryBackend == .coreDevice ? " · Apps via Xcode" : (device.availability == .ready ? "" : " · Configurator unavailable"))).tag(Optional(device.id))
+                        Text(device.displayName + (device.availability == .pairedDisconnected ? " · Offline" : device.capabilities.inventoryBackend == .coreDevice ? " · Apps via Xcode" : (device.availability == .ready ? "" : " · Configurator unavailable"))).tag(Optional(device.id))
                     }
                 }
                 .labelsHidden()
                 .disabled(model.selectionLocked || model.devices.isEmpty)
 
                 if let device = model.selectedDevice {
-                    Label(device.capabilities.inventoryBackend == .coreDevice ? "\(device.transport) · Apps via Xcode" : (device.availability == .ready ? device.transport : "USB detected · Configurator unavailable"), systemImage: device.transport == "USB" ? "cable.connector" : "questionmark.circle")
+                    Label(device.availability == .pairedDisconnected ? "Paired device · Offline" : device.capabilities.inventoryBackend == .coreDevice ? "\(device.transport) · Apps via Xcode" : (device.availability == .ready ? device.transport : "USB detected · Configurator unavailable"), systemImage: device.transport == "USB" ? "cable.connector" : "questionmark.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -112,17 +112,29 @@ struct WorkspaceView: View {
         if let device = model.selectedDevice, model.section != .connection,
            !device.capabilities.canReadApps || (model.section == .home && !device.capabilities.canReadLayout) {
             ContentUnavailableView {
-                Label(device.capabilities.canReadApps ? "Home Screen unavailable" : "USB detected", systemImage: "iphone.and.arrow.forward")
+                Label(device.availability == .pairedDisconnected ? "Paired device is offline" : (device.capabilities.canReadApps ? "Home Screen editing requires Configurator" : "USB detected"), systemImage: "iphone.and.arrow.forward")
             } description: {
                 VStack(spacing: 12) {
-                    Text(device.diagnostic ?? "Your device is connected to this Mac, but Apple Configurator cannot currently access it.")
-                    Text("Close and reopen Apple Configurator and check that your device appears there. If needed, reconnect the cable, unlock your device and accept Trust, then retry.")
-                    Text("Apps and Home Screen changes become available when Configurator can access the device.")
+                    if device.availability == .pairedDisconnected {
+                        Text("Connect directly to this Mac with a data cable, unlock your device and accept Trust, then refresh Connection.")
+                        Text("The last reported connection was \(device.transport). Pairing does not mean the device is currently reachable.")
+                    } else if device.capabilities.canReadApps {
+                        Text("App management is available through Xcode. To edit the Home Screen, reopen Apple Configurator and check that your device appears there, then retry.")
+                    } else {
+                        Text(device.diagnostic ?? "Apple Configurator cannot currently access this device.")
+                        Text("Reconnect directly to this Mac with a data cable, unlock your device and accept Trust, then retry.")
+                    }
                 }
             } actions: {
-                Button("Retry Connection") { model.requestRefresh() }.disabled(model.selectionLocked)
-                Button("Open Apple Configurator") { model.openConfigurator() }
-                Button("Choose cfgutil…") { model.chooseCfgutil() }.disabled(model.selectionLocked)
+                Button(device.availability == .pairedDisconnected ? "Refresh Connection" : "Retry Connection") { model.requestRefresh() }.disabled(model.selectionLocked)
+                if device.availability == .pairedDisconnected {
+                    Button("Open Connection Help") { model.section = .connection }
+                } else {
+                    Button("Open Apple Configurator") { model.openConfigurator() }
+                    if device.capabilities.canReadApps {
+                        Link("Manual Home Screen changes with iPhone Mirroring", destination: URL(string: "https://support.apple.com/en-us/120421")!)
+                    }
+                }
             }
         } else if model.setupRequired && !model.canReadApps && model.section != .connection {
             ContentUnavailableView {
@@ -193,10 +205,22 @@ struct AppsView: View {
                     .padding(.top, 8)
             }
 
-            TextField("Search apps", text: $model.search)
+            TextField("Search name or bundle ID", text: $model.search)
                 .textFieldStyle(.roundedBorder)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 16)
+
+            HStack {
+                Picker("Show", selection: $model.removableOnly) {
+                    Text("All").tag(false)
+                    Text("Removable").tag(true)
+                }.pickerStyle(.segmented).frame(width: 220)
+                Spacer()
+                Button("Select Shown Removable") { model.selectShownRemovable() }
+                    .disabled(model.selectionLocked || !model.canRemoveApps)
+                Button("Clear Selection") { model.clearSelection() }
+                    .disabled(model.selectionLocked || model.selectedApps.isEmpty)
+            }.padding(.horizontal, 24).padding(.bottom, 12)
 
             if model.inventory == nil {
                 ContentUnavailableView("Choose a device", systemImage: "iphone", description: Text("Select a connected device to load its apps."))
@@ -215,7 +239,7 @@ struct AppsView: View {
                             }
                         ))
                         .labelsHidden()
-                        .disabled(model.isBusy || !model.canSelectForRemoval(app))
+                        .disabled(model.selectionLocked || !model.canSelectForRemoval(app))
                         AppArtwork(app: app, name: model.displayName(for: app.id), iconData: model.iconCache[app.id])
                             .task(id: "\(app.id):\(model.isBusy)") { await model.loadIconIfNeeded(for: app.id) }
                         VStack(alignment: .leading, spacing: 2) {
@@ -229,7 +253,7 @@ struct AppsView: View {
                             }
                             if app.isHidden == true { Text("Hidden app").font(.caption).foregroundStyle(.secondary) }
                             if app.isInternal == true { Text("Internal app").font(.caption).foregroundStyle(.secondary) }
-                            if model.selectedDevice?.capabilities.inventoryBackend == .coreDevice {
+                            if model.inventory?.source == .coreDevice {
                                 if app.isRemovable == false {
                                     Text("Not removable").font(.caption).foregroundStyle(.secondary)
                                 } else if app.isRemovable == nil || app.isHidden == nil || app.isInternal == nil {
@@ -241,7 +265,7 @@ struct AppsView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        guard !model.isBusy, model.canSelectForRemoval(app) else { return }
+                        guard !model.selectionLocked, model.canSelectForRemoval(app) else { return }
                         if model.selectedApps.contains(app.id) { model.selectedApps.remove(app.id) }
                         else { model.selectedApps.insert(app.id) }
                     }
@@ -252,12 +276,12 @@ struct AppsView: View {
             if !model.selectedApps.isEmpty {
                 Divider()
                 HStack {
-                    Text("\(model.selectedApps.count) apps selected")
+                    Text("\(model.selectedApps.count) selected · \(model.hiddenSelectedCount) hidden by filters")
                     Spacer()
-                    Button("Remove Selected…", role: .destructive) {
+                    Button("Review Selected…", role: .destructive) {
                         Task { await model.reviewRemoval() }
                     }
-                    .disabled(model.isBusy || model.hasDraftChanges)
+                    .disabled(model.selectionLocked || model.hasDraftChanges)
                 }
                 .padding(16)
                 if model.hasDraftChanges {
@@ -279,18 +303,17 @@ private struct RemoveConfirmationView: View {
             Label("Remove \(model.removalPlan?.ids.count ?? 0) apps?", systemImage: "trash")
                 .font(.title2.bold())
                 .foregroundStyle(.red)
-            Text("From \(model.selectedDevice?.displayName ?? "the selected device").")
+            Text("From \(model.reviewDeviceName).")
             Text("Removing apps can delete their local data. Review every app before continuing.")
                 .foregroundStyle(.secondary)
             Text("Remove using \(model.removalPlan?.backendName ?? "the selected backend").")
+            Text("App list verified using \(model.removalPlan?.inventorySource == .coreDevice ? "Xcode" : "Apple Configurator").").foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach((model.removalPlan?.ids ?? []).sorted(by: { model.displayName(for: $0) < model.displayName(for: $1) }), id: \.self) { id in
                         VStack(alignment: .leading) {
                             Text("• \(model.displayName(for: id))")
-                            if model.displayName(for: id) == "Unrecognized app" {
-                                Text(id).font(.caption).foregroundStyle(.secondary)
-                            }
+                            Text(id).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -299,7 +322,7 @@ private struct RemoveConfirmationView: View {
             .frame(maxHeight: 220)
             HStack {
                 Spacer()
-                Button("Cancel") { model.showRemoveConfirmation = false }
+                Button("Cancel") { model.showRemoveConfirmation = false; model.removalPlan = nil }
                     .keyboardShortcut(.cancelAction)
                 Button("Remove \(model.removalPlan?.ids.count ?? 0) Apps", role: .destructive) {
                     Task { await model.removeSelectedApps() }
@@ -343,9 +366,25 @@ struct ConnectionView: View {
                     Label("\(device.displayName) · \(device.transport)", systemImage: "iphone")
                         .font(.headline)
                 }
+                if let device = model.selectedDevice {
+                    GroupBox("Device diagnostics") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("USB presence: \(device.usbPresent ? "Detected" : "Not detected")")
+                            Text("App inventory: \((model.inventory?.source ?? device.capabilities.inventoryBackend) == .coreDevice ? "Xcode" : ((model.inventory?.source ?? device.capabilities.inventoryBackend) == .cfgutil ? "Apple Configurator" : "Unavailable"))")
+                            Text("App removal: \(device.capabilities.canRemoveApps ? (device.capabilities.inventoryBackend == .cfgutil ? "Apple Configurator" : "Xcode") : "Unavailable")")
+                            Text("Home Screen backend: \(device.capabilities.canReadLayout ? "Apple Configurator" : "Unavailable")")
+                            Text("Paired: \(device.isPaired.map { $0 ? "Yes" : "No" } ?? "Not reported")")
+                            Text("Last reported transport: \(device.transport)")
+                            if let date = model.lastSuccessfulRefresh { Text("Device discovery refreshed: \(date.formatted(date: .abbreviated, time: .standard))") }
+                            if device.availability == .pairedDisconnected { Text("Paired device is offline").foregroundStyle(.orange) }
+                            Text("USB presence confirms a cable is visible; it does not establish backend access.").foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+                    }
+                }
+                Button("Refresh Connection") { model.requestRefresh() }.disabled(model.selectionLocked)
                 GroupBox("Connect over USB") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("1. Connect your device to this Mac with a cable.")
+                        Text("1. Connect your device directly to this Mac with a data cable.")
                         Text("2. Unlock it and accept the Trust prompt.")
                         Text("3. Select it in the sidebar and refresh.")
                     }
@@ -363,7 +402,7 @@ struct ConnectionView: View {
                     .padding(.top, 6)
                 }
                 Button("Choose cfgutil Executable…") { model.chooseCfgutil() }
-                    .disabled(model.hasDraftChanges || model.isBusy)
+                    .disabled(model.hasDraftChanges || model.selectionLocked)
             }
             .frame(maxWidth: 760, alignment: .leading)
             .padding(24)
