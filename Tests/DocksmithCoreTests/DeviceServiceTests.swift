@@ -73,7 +73,7 @@ final class DeviceServiceTests: XCTestCase {
         let first = Data(#"{"Output":{"selected":{"installedApps":[{"bundleIdentifier":"com.example.one","displayName":"One"}]},"Errors":{"selected":{}}}}"#.utf8)
         let partialEmpty = Data(#"{"Output":{"selected":{"installedApps":[]},"Errors":{"selected":{}}}}"#.utf8)
         let mock = ServiceFixtureRunner(layoutResponses: [], inventories: [
-            CommandResult(stdout: first), CommandResult(stdout: partialEmpty, exitCode: 1),
+            CommandResult(stdout: first), CommandResult(stdout: first), CommandResult(stdout: partialEmpty, exitCode: 1),
         ])
         let results = try await DeviceService(runner: mock).removeApps(deviceID: "selected", ids: ["com.example.one"])
         XCTAssertEqual(results.count, 1)
@@ -84,7 +84,7 @@ final class DeviceServiceTests: XCTestCase {
     func testInventoriedAppleAppIsAttemptedAndCfgutilFailureIsReported() async throws {
         let inventory = Data(#"{"Output":{"selected":{"installedApps":[{"bundleIdentifier":"com.apple.Pages","displayName":"Pages"}]},"Errors":{"selected":{}}}}"#.utf8)
         let mock = ServiceFixtureRunner(layoutResponses: [], inventories: [
-            CommandResult(stdout: inventory), CommandResult(stdout: inventory),
+            CommandResult(stdout: inventory), CommandResult(stdout: inventory), CommandResult(stdout: inventory),
         ], removalResult: CommandResult(stdout: Data(#"{"Output":{"Errors":{"selected":{"remove-app":"rejected"}}}}"#.utf8), exitCode: 1))
         let results = try await DeviceService(runner: mock).removeApps(deviceID: "selected", ids: ["com.apple.Pages"])
         XCTAssertEqual(results.count, 1)
@@ -96,7 +96,7 @@ final class DeviceServiceTests: XCTestCase {
         let inventory = Data(#"{"Output":{"selected":{"installedApps":[{"bundleIdentifier":"com.apple.mobilegarageband","displayName":"GarageBand"}]},"Errors":{"selected":{}}}}"#.utf8)
         let completeEmpty = Data(#"{"Output":{"selected":{"installedApps":[]},"Errors":{"selected":{}}}}"#.utf8)
         let mock = ServiceFixtureRunner(layoutResponses: [], inventories: [
-            CommandResult(stdout: inventory), CommandResult(stdout: completeEmpty),
+            CommandResult(stdout: inventory), CommandResult(stdout: inventory), CommandResult(stdout: completeEmpty),
         ])
         let results = try await DeviceService(runner: mock).removeApps(deviceID: "selected", ids: ["com.apple.mobilegarageband"])
         XCTAssertEqual(results.count, 1)
@@ -110,7 +110,7 @@ final class DeviceServiceTests: XCTestCase {
     func testAppAbsentFromFreshInventoryIsNeverRemoved() async throws {
         let emptyInventory = Data(#"{"Output":{"selected":{"installedApps":[]},"Errors":{"selected":{}}}}"#.utf8)
         let mock = ServiceFixtureRunner(layoutResponses: [], inventories: [
-            CommandResult(stdout: emptyInventory), CommandResult(stdout: emptyInventory),
+            CommandResult(stdout: emptyInventory), CommandResult(stdout: emptyInventory), CommandResult(stdout: emptyInventory),
         ])
         let results = try await DeviceService(runner: mock).removeApps(deviceID: "selected", ids: ["com.apple.mobilegarageband"])
         XCTAssertEqual(results.count, 1)

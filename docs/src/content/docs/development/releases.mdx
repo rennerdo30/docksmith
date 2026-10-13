@@ -1,11 +1,11 @@
 ---
 title: Releases
-description: How Docksmith builds and publishes its CLI and documentation.
+description: How Docksmith builds and publishes its macOS app, CLI and documentation.
 ---
 
 Continuous integration builds and tests the Swift package. A tag in `vMAJOR.MINOR.PATCH` form, optionally with a prerelease suffix, triggers release automation. It tests and builds on both Apple Silicon and Intel macOS runners, then packages architecture-specific `Docksmith.app` ZIP archives and companion CLI archives. Both builds must pass before publication. The release includes `SHA256SUMS` for its archives.
 
-The current release workflow does not sign or notarize the app or CLI. No version-tag release has been issued yet; consult the release page when one is available.
+The current release workflow does not sign or notarize the app or CLI. Preview tags such as `v0.1.0-alpha.1` publish prereleases for testing. Download the archive matching your Mac from [GitHub Releases](https://github.com/rennerdo30/docksmith/releases), then compare it with the included `SHA256SUMS`.
 
 The documentation site is built from this repository's `docs/` directory with Astro Starlight. A pull request builds the docs for validation. Changes on `main` deploy the built `docs/dist` artifact through GitHub Pages after Pages is configured to use GitHub Actions.
 
@@ -18,4 +18,4 @@ npm run check
 npm run build
 ```
 
-Publishing the CLI and publishing these docs do not grant device access. The user still needs Apple Configurator's separately installed `cfgutil` and a trusted device connection.
+Publishing the app, CLI and docs does not grant device access. Apple Configurator's separately installed `cfgutil` provides Home Screen access; optional Xcode provides app inventory and supported removal. A trusted, reachable device connection is still required.

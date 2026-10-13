@@ -7,6 +7,9 @@ public struct CoreDeviceInfo: Sendable {
     public let name: String
     public let model: String
     public let transport: String
+    public var isPaired: Bool? = nil
+    public var connectionState: String = "connected"
+    public var isConnected: Bool { connectionState == "connected" }
 }
 
 public protocol CoreDeviceProviding: Sendable {
@@ -64,18 +67,23 @@ public struct CoreDeviceProvider: CoreDeviceProviding {
         guard let result = Self.successfulResult(try runner.listDevices()),
               let devices = result["devices"] as? [[String: Any]] else { return [] }
         return devices.compactMap { device in
+            let properties = device["properties"] as? [String: Any]
             guard let identifier = device["identifier"] as? String, !identifier.isEmpty,
-                  let hardware = device["hardwareProperties"] as? [String: Any],
+                  let hardware = (properties?["hardware"] ?? device["hardwareProperties"]) as? [String: Any],
                   hardware["reality"] as? String == "physical",
                   let type = hardware["deviceType"] as? String, ["iPhone", "iPad"].contains(type),
-                  let connection = device["connectionProperties"] as? [String: Any],
-                  connection["tunnelState"] as? String == "connected" else { return nil }
-            let properties = device["deviceProperties"] as? [String: Any]
+                  let connection = (properties?["connection"] ?? device["connectionProperties"]) as? [String: Any] else { return nil }
+            let state = (connection["state"] ?? connection["tunnelState"]) as? String ?? "unknown"
+            let pairingState = connection["pairingState"] as? String
+            let paired: Bool? = pairingState == "paired" ? true : (pairingState == "unpaired" ? false : nil)
             let ecid = (hardware["ecid"] as? NSNumber)?.stringValue ?? hardware["ecid"] as? String
+            guard state == "connected" || (state == "disconnected" && paired == true && ecid.flatMap(DeviceIdentity.canonicalECID) != nil) else { return nil }
+            let nameProperties = (properties?["state"] ?? device["deviceProperties"]) as? [String: Any]
             return CoreDeviceInfo(identifier: identifier, udid: hardware["udid"] as? String,
-                                  ecid: ecid, name: properties?["name"] as? String ?? type,
+                                  ecid: ecid, name: nameProperties?["name"] as? String ?? type,
                                   model: hardware["productType"] as? String ?? type,
-                                  transport: Self.transport(connection["transportType"] as? String))
+                                  transport: Self.transport(connection["transportType"] as? String),
+                                  isPaired: paired, connectionState: state)
         }
     }
 
@@ -83,12 +91,12 @@ public struct CoreDeviceProvider: CoreDeviceProviding {
         guard let result = Self.successfulResult(try runner.listApps(identifier: identifier)),
               let rawApps = result["apps"] as? [[String: Any]],
               ["defaultAppsIncluded", "hiddenAppsIncluded", "internalAppsIncluded", "removableAppsIncluded"].allSatisfy({ result[$0] as? Bool == true }) else {
-            return InventorySnapshot(deviceID: deviceID, apps: [], warning: "Xcode could not return a complete app inventory. Retry Connection.", isPartial: true, isDecoded: false)
+            return InventorySnapshot(deviceID: deviceID, apps: [], warning: "Xcode could not return a complete app inventory. Retry Connection.", isPartial: true, isDecoded: false, source: .coreDevice, sourceTarget: identifier)
         }
         var apps: [String: InstalledApp] = [:]
         for raw in rawApps {
             guard let id = raw["bundleIdentifier"] as? String, !id.isEmpty, apps[id] == nil else {
-                return InventorySnapshot(deviceID: deviceID, apps: [], warning: "Xcode returned a malformed app inventory.", isPartial: true, isDecoded: false)
+                return InventorySnapshot(deviceID: deviceID, apps: [], warning: "Xcode returned a malformed app inventory.", isPartial: true, isDecoded: false, source: .coreDevice, sourceTarget: identifier)
             }
             apps[id] = InstalledApp(id: id, name: raw["name"] as? String ?? AppNames.knownName(for: id) ?? id,
                                     version: raw["version"] as? String ?? raw["bundleVersion"] as? String,
@@ -98,7 +106,7 @@ public struct CoreDeviceProvider: CoreDeviceProviding {
         return InventorySnapshot(deviceID: deviceID,
                                  apps: apps.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
                                  warning: "Inventory includes system, hidden and internal apps when reported. Home Screen editing requires Apple Configurator access.",
-                                 isPartial: false, isDecoded: true)
+                                 isPartial: false, isDecoded: true, source: .coreDevice, sourceTarget: identifier)
     }
 
     private static func transport(_ reported: String?) -> String {
